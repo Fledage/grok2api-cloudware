@@ -264,6 +264,46 @@
       border-color: #000;
     }
 
+    .import-file-panel {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 34px;
+      padding: 10px 12px;
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      background: #fafafa;
+    }
+
+    .import-file-name {
+      min-width: 0;
+      flex: 1 1 auto;
+      color: var(--accents-5);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .export-option-btn {
+      width: 100%;
+      min-height: 40px;
+      padding: 0 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--accents-7);
+      font-size: 13px;
+      font-weight: 600;
+      text-align: left;
+      transition: background .15s, border-color .15s;
+    }
+
+    .export-option-btn:hover {
+      background: #f6f7f9;
+      border-color: #d1d5db;
+    }
+
     .tab-panel.hidden {
       display: none;
     }

@@ -1,5 +1,6 @@
 export type ModelTier = "basic" | "super" | "heavy";
 export type ModelCapability = "chat" | "image" | "image_edit" | "video";
+export type TokenPoolName = "basic" | "super" | "heavy";
 
 export interface ModelInfo {
   mode_id: string;
@@ -16,6 +17,12 @@ export interface ModelInfo {
   legacy_alias?: boolean;
   is_image_model?: boolean;
   is_video_model?: boolean;
+}
+
+export interface AvailableTokenPools {
+  basic: boolean;
+  super: boolean;
+  heavy: boolean;
 }
 
 const CHAT_DEFAULTS = {
@@ -225,4 +232,17 @@ export function tokenPoolOrder(model: string): Array<"sso" | "ssoSuper"> {
 export function quotaFieldForModel(model: string): "remaining_queries" | "heavy_remaining_queries" {
   const cfg = MODEL_CONFIG[model];
   return cfg?.tier === "heavy" || cfg?.mode_id === "heavy" ? "heavy_remaining_queries" : "remaining_queries";
+}
+
+export function supportedTokenPoolsForModel(model: string): TokenPoolName[] {
+  const cfg = MODEL_CONFIG[model];
+  if (!cfg) return [];
+  if (cfg.tier === "heavy" || cfg.mode_id === "heavy") return ["heavy"];
+  if (cfg.tier === "super") return ["super", "heavy"];
+  if (cfg.prefer_best) return ["heavy", "super", "basic"];
+  return ["basic", "super", "heavy"];
+}
+
+export function isModelAvailableForPools(model: string, pools: AvailableTokenPools): boolean {
+  return supportedTokenPoolsForModel(model).some((pool) => pools[pool]);
 }

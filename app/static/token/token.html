@@ -10,7 +10,7 @@
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
   <link href="/static/common/common.css?v=3" rel="stylesheet">
-  <link href="/static/token/token.css?v=12" rel="stylesheet">
+  <link href="/static/token/token.css?v=13" rel="stylesheet">
   <link href="/static/common/toast.css" rel="stylesheet">
 </head>
 
@@ -30,6 +30,15 @@
           <p class="text-[var(--accents-4)] mt-1 text-sm">管理 Grok2API 的 Token 服务号池。</p>
         </div>
         <div class="flex items-center gap-3 w-full sm:w-auto">
+          <button onclick="exportTokens()" class="geist-button-outline gap-2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            导出
+          </button>
           <button onclick="openImportModal()" class="geist-button-outline gap-2">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
               stroke-linecap="round" stroke-linejoin="round">
@@ -262,10 +271,40 @@
           <textarea id="import-text" class="geist-input font-mono h-48"
             placeholder="粘贴 Token，一行一个..."></textarea>
         </div>
+        <div class="import-file-panel">
+          <input id="import-file" type="file" accept=".txt,.json,text/plain,application/json" class="hidden"
+            onchange="updateImportFileState()">
+          <button type="button" onclick="document.getElementById('import-file').click()"
+            class="geist-button-outline text-xs px-3">选择文件</button>
+          <span id="import-file-name" class="import-file-name">未选择文件</span>
+        </div>
+        <div id="import-file-hint" class="text-xs text-[var(--accents-4)]">
+          支持 .txt 每行一个 Token，或 .json 的 ssoBasic/ssoSuper 分组导出文件。
+        </div>
         <div class="flex justify-end gap-2 pt-2">
           <button onclick="closeImportModal()" class="geist-button-outline text-xs px-3">取消</button>
           <button onclick="submitImport()" class="geist-button text-xs px-3">开始导入</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Export Modal -->
+  <div id="export-modal" class="modal-overlay hidden">
+    <div class="modal-content modal-md">
+      <div class="modal-header">
+        <h3 class="modal-title">导出 Token</h3>
+        <button onclick="closeExportModal()" class="modal-close">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+      <div class="space-y-3">
+        <p class="text-sm text-[var(--accents-5)]">当前共 <span id="export-count">0</span> 个 Token。</p>
+        <button onclick="downloadExport('json')" class="export-option-btn">JSON 格式（完整导出）</button>
+        <button onclick="downloadExport('txt')" class="export-option-btn">TXT 格式（仅 Token）</button>
       </div>
     </div>
   </div>
@@ -331,7 +370,7 @@
   <script src="/static/common/header.js?v=4"></script>
   <script src="/static/common/footer.js?v=1"></script>
   <script src="/static/common/toast.js"></script>
-  <script src="/static/token/token.js?v=15"></script>
+  <script src="/static/token/token.js?v=16"></script>
 </body>
 
 </html>

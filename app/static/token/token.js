@@ -26,8 +26,15 @@ function normalizeSsoToken(token) {
   return v.startsWith('sso=') ? v.slice(4).trim() : v;
 }
 
+function normalizePoolName(pool) {
+  const value = String(pool || '').trim();
+  const lower = value.toLowerCase();
+  if (value === 'ssoSuper' || lower === 'super' || lower === 'heavy' || lower === 'ssosuper') return 'ssoSuper';
+  return 'ssoBasic';
+}
+
 function poolToType(pool) {
-  return String(pool || '').trim() === 'ssoSuper' ? 'ssoSuper' : 'sso';
+  return normalizePoolName(pool) === 'ssoSuper' ? 'ssoSuper' : 'sso';
 }
 
 function normalizeStatus(rawStatus) {
@@ -65,7 +72,8 @@ async function parseJsonSafely(response) {
 }
 
 function normalizeTokenRecord(pool, raw) {
-  const tokenType = poolToType(pool);
+  const normalizedPool = normalizePoolName(pool);
+  const tokenType = poolToType(normalizedPool);
   const isString = typeof raw === 'string';
   const source = isString ? { token: raw } : (raw || {});
   const token = normalizeSsoToken(source.token);
@@ -78,7 +86,7 @@ function normalizeTokenRecord(pool, raw) {
   return {
     token,
     status,
-    quota: quotaParsed.known ? quotaParsed.value : 0,
+    quota: quotaParsed.known ? quotaParsed.value : -1,
     quota_known: quotaParsed.known,
     heavy_quota: heavyParsed.known ? heavyParsed.value : -1,
     heavy_quota_known: heavyParsed.known,
@@ -86,9 +94,92 @@ function normalizeTokenRecord(pool, raw) {
     note: source.note || '',
     fail_count: source.fail_count || 0,
     use_count: source.use_count || 0,
-    pool: pool,
+    pool: normalizedPool,
     _selected: false,
   };
+}
+
+function makeImportedToken(raw, pool) {
+  return normalizeTokenRecord(pool, raw);
+}
+
+function parseTextTokens(text, pool) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((line) => normalizeSsoToken(line.trim()))
+    .filter(Boolean)
+    .map((token) => makeImportedToken({ token }, pool))
+    .filter(Boolean);
+}
+
+function parseJsonImport(text, fallbackPool) {
+  const parsed = JSON.parse(text);
+  const out = [];
+  const pushItems = (items, pool) => {
+    const list = Array.isArray(items) ? items : [];
+    list.forEach((item) => {
+      const record = makeImportedToken(item, pool);
+      if (record) out.push(record);
+    });
+  };
+
+  if (Array.isArray(parsed)) {
+    pushItems(parsed, fallbackPool);
+    return out;
+  }
+
+  if (parsed && typeof parsed === 'object') {
+    if (Array.isArray(parsed.tokens)) {
+      pushItems(parsed.tokens, parsed.pool || fallbackPool);
+    }
+    ['ssoBasic', 'ssoSuper', 'basic', 'super', 'heavy', 'sso', 'sso-super'].forEach((key) => {
+      if (Array.isArray(parsed[key])) pushItems(parsed[key], key);
+    });
+  }
+  return out;
+}
+
+function mergeImportedTokens(records) {
+  let added = 0;
+  const seen = new Set(flatTokens.map((t) => getTokenKey(t.token)));
+  records.forEach((record) => {
+    if (!record) return;
+    const key = getTokenKey(record.token);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    flatTokens.push({ ...record, _selected: false });
+    added += 1;
+  });
+  return added;
+}
+
+function exportPayload() {
+  const grouped = { ssoBasic: [], ssoSuper: [] };
+  flatTokens.forEach((item) => {
+    const pool = normalizePoolName(item.pool);
+    grouped[pool].push({
+      token: normalizeSsoToken(item.token),
+      status: item.status || 'active',
+      quota: Number.isFinite(Number(item.quota)) ? Number(item.quota) : -1,
+      heavy_quota: Number.isFinite(Number(item.heavy_quota)) ? Number(item.heavy_quota) : -1,
+      note: item.note || '',
+      fail_count: Number(item.fail_count || 0),
+      use_count: Number(item.use_count || 0),
+    });
+  });
+  return grouped;
+}
+
+function downloadContent(content, filename, mime) {
+  const blob = new Blob([content], { type: mime });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  window.URL.revokeObjectURL(url);
+  document.body.removeChild(a);
 }
 
 function isTokenInvalid(item) {
@@ -790,54 +881,82 @@ function closeImportModal() {
     modal.classList.add('hidden');
     const input = document.getElementById('import-text');
     if (input) input.value = '';
+    const fileInput = document.getElementById('import-file');
+    if (fileInput) fileInput.value = '';
+    updateImportFileState();
   }, 200);
 }
 
 async function submitImport() {
-  const pool = document.getElementById('import-pool').value.trim() || 'ssoBasic';
+  const pool = normalizePoolName(document.getElementById('import-pool').value);
   const text = document.getElementById('import-text').value;
-  const lines = text.split('\n');
+  const file = document.getElementById('import-file')?.files?.[0] || null;
+  let records = [];
 
-  lines.forEach(line => {
-    const t = normalizeSsoToken(line.trim());
-    if (t && !flatTokens.some(ft => getTokenKey(ft.token) === t)) {
-      flatTokens.push({
-        token: t,
-        pool: pool,
-        status: 'active',
-        quota: 80,
-        quota_known: true,
-        heavy_quota: -1,
-        heavy_quota_known: false,
-        token_type: poolToType(pool),
-        note: '',
-        use_count: 0,
-        _selected: false
-      });
+  try {
+    if (file) {
+      const raw = await file.text();
+      records = file.name.toLowerCase().endsWith('.json') ? parseJsonImport(raw, pool) : parseTextTokens(raw, pool);
+    } else if (text.trim().startsWith('{') || text.trim().startsWith('[')) {
+      records = parseJsonImport(text, pool);
+    } else {
+      records = parseTextTokens(text, pool);
     }
-  });
+  } catch (e) {
+    showToast(`导入解析失败: ${e.message}`, 'error');
+    return;
+  }
+
+  if (!records.length) return showToast('没有可导入的 Token', 'error');
+  const added = mergeImportedTokens(records);
+  if (!added) return showToast('没有新增 Token，可能都已存在', 'info');
 
   await syncToServer();
   closeImportModal();
   applyFilters();
   loadData();
+  showToast(`导入完成，新增 ${added} 个`, 'success');
+}
+
+function updateImportFileState() {
+  const file = document.getElementById('import-file')?.files?.[0] || null;
+  const name = document.getElementById('import-file-name');
+  const hint = document.getElementById('import-file-hint');
+  if (name) name.textContent = file ? file.name : '未选择文件';
+  if (hint) {
+    hint.textContent = file && file.name.toLowerCase().endsWith('.json')
+      ? 'JSON 文件会按文件内的 pool 分组导入，目标 Pool 只作为无分组时的默认值。'
+      : 'TXT 文件每行一个 Token，将导入到当前选择的目标 Pool。';
+  }
 }
 
 // Export Logic
 function exportTokens() {
-  let content = "";
-  flatTokens.forEach(t => content += t.token + "\n");
-  if (!content) return showToast('列表为空', 'error');
+  if (!flatTokens.length) return showToast('列表为空', 'error');
+  const modal = document.getElementById('export-modal');
+  const count = document.getElementById('export-count');
+  if (count) count.textContent = String(flatTokens.length);
+  if (!modal) return downloadExport('txt');
+  modal.classList.remove('hidden');
+  requestAnimationFrame(() => modal.classList.add('is-open'));
+}
 
-  const blob = new Blob([content], { type: 'text/plain' });
-  const url = window.URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `tokens_export_${new Date().toISOString().slice(0, 10)}.txt`;
-  document.body.appendChild(a);
-  a.click();
-  window.URL.revokeObjectURL(url);
-  document.body.removeChild(a);
+function closeExportModal() {
+  const modal = document.getElementById('export-modal');
+  if (!modal) return;
+  modal.classList.remove('is-open');
+  setTimeout(() => modal.classList.add('hidden'), 200);
+}
+
+function downloadExport(format) {
+  const date = new Date().toISOString().slice(0, 10);
+  if (format === 'json') {
+    downloadContent(JSON.stringify(exportPayload(), null, 2), `tokens_export_${date}.json`, 'application/json');
+  } else {
+    const content = flatTokens.map((t) => normalizeSsoToken(t.token)).filter(Boolean).join('\n') + '\n';
+    downloadContent(content, `tokens_export_${date}.txt`, 'text/plain');
+  }
+  closeExportModal();
 }
 
 async function copyToClipboard(text, btn) {

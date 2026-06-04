@@ -1,7 +1,7 @@
 import type { Env } from "../env";
 import { dbAll, dbFirst, dbRun } from "../db";
 import { nowMs } from "../utils/time";
-import { quotaFieldForModel, tokenPoolOrder } from "../grok/models";
+import { quotaFieldForModel, tokenPoolOrder, type AvailableTokenPools } from "../grok/models";
 
 export type TokenType = "sso" | "ssoSuper";
 
@@ -173,6 +173,44 @@ export async function selectBestToken(db: Env["DB"], model: string): Promise<{ t
     if (chosen) return chosen;
   }
   return null;
+}
+
+export async function getAvailableTokenPools(db: Env["DB"]): Promise<AvailableTokenPools> {
+  const now = nowMs();
+  const baseWhere = `
+    status != 'expired'
+    AND failed_count < ?
+    AND (cooldown_until IS NULL OR cooldown_until <= ?)
+  `;
+  const basic = await dbFirst<{ c: number }>(
+    db,
+    `SELECT COUNT(1) as c FROM tokens
+     WHERE token_type = 'sso'
+       AND ${baseWhere}
+       AND remaining_queries != 0`,
+    [MAX_FAILURES, now],
+  );
+  const superPool = await dbFirst<{ c: number }>(
+    db,
+    `SELECT COUNT(1) as c FROM tokens
+     WHERE token_type = 'ssoSuper'
+       AND ${baseWhere}
+       AND remaining_queries != 0`,
+    [MAX_FAILURES, now],
+  );
+  const heavy = await dbFirst<{ c: number }>(
+    db,
+    `SELECT COUNT(1) as c FROM tokens
+     WHERE token_type = 'ssoSuper'
+       AND ${baseWhere}
+       AND heavy_remaining_queries != 0`,
+    [MAX_FAILURES, now],
+  );
+  return {
+    basic: (basic?.c ?? 0) > 0,
+    super: (superPool?.c ?? 0) > 0,
+    heavy: (heavy?.c ?? 0) > 0,
+  };
 }
 
 export async function recordTokenFailure(

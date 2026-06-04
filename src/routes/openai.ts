@@ -3,7 +3,13 @@ import { cors } from "hono/cors";
 import type { Env } from "../env";
 import { requireApiAuth } from "../auth";
 import { buildSsoCookie, getSettings } from "../settings";
-import { isValidModel, MODEL_CONFIG, quotaFieldForModel, type ModelCapability } from "../grok/models";
+import {
+  isModelAvailableForPools,
+  isValidModel,
+  MODEL_CONFIG,
+  quotaFieldForModel,
+  type ModelCapability,
+} from "../grok/models";
 import { extractContent, buildConversationPayload, sendConversationRequest } from "../grok/conversation";
 import { uploadImage } from "../grok/upload";
 import { getDynamicHeaders } from "../grok/headers";
@@ -34,7 +40,7 @@ import {
   normalizeResponsesTools,
 } from "../grok/tooling";
 import { addRequestLog } from "../repo/logs";
-import { applyCooldown, recordTokenFailure, selectBestToken } from "../repo/tokens";
+import { applyCooldown, getAvailableTokenPools, recordTokenFailure, selectBestToken } from "../repo/tokens";
 import type { ApiAuthInfo } from "../auth";
 import { getApiKeyLimits } from "../repo/apiKeys";
 import { localDayString, tryConsumeDailyUsage, tryConsumeDailyUsageMulti } from "../repo/apiKeyUsage";
@@ -1242,26 +1248,33 @@ function resolveImageResponseFormatByMethodOrError(
 
 openAiRoutes.get("/models", async (c) => {
   const ts = Math.floor(Date.now() / 1000);
-  const data = Object.entries(MODEL_CONFIG).map(([id, cfg]) => ({
-    id,
-    object: "model",
-    created: ts,
-    owned_by: "x-ai",
-    display_name: cfg.display_name,
-    description: cfg.description,
-    capabilities: cfg.capabilities,
-    raw_model_path: cfg.raw_model_path,
-    default_temperature: cfg.default_temperature,
-    default_max_output_tokens: cfg.default_max_output_tokens,
-    supported_max_output_tokens: cfg.supported_max_output_tokens,
-    default_top_p: cfg.default_top_p,
-  }));
+  const pools = await getAvailableTokenPools(c.env.DB);
+  const data = Object.entries(MODEL_CONFIG)
+    .filter(([id]) => isModelAvailableForPools(id, pools))
+    .map(([id, cfg]) => ({
+      id,
+      object: "model",
+      created: ts,
+      owned_by: "x-ai",
+      display_name: cfg.display_name,
+      description: cfg.description,
+      capabilities: cfg.capabilities,
+      raw_model_path: cfg.raw_model_path,
+      default_temperature: cfg.default_temperature,
+      default_max_output_tokens: cfg.default_max_output_tokens,
+      supported_max_output_tokens: cfg.supported_max_output_tokens,
+      default_top_p: cfg.default_top_p,
+    }));
   return c.json({ object: "list", data });
 });
 
 openAiRoutes.get("/models/:modelId", async (c) => {
   const modelId = c.req.param("modelId");
   if (!isValidModel(modelId)) return c.json(openAiError(`Model '${modelId}' not found`, "model_not_found"), 404);
+  const pools = await getAvailableTokenPools(c.env.DB);
+  if (!isModelAvailableForPools(modelId, pools)) {
+    return c.json(openAiError(`Model '${modelId}' not found`, "model_not_found"), 404);
+  }
   const cfg = MODEL_CONFIG[modelId]!;
   const ts = Math.floor(Date.now() / 1000);
   return c.json({

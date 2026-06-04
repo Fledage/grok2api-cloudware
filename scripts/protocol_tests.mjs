@@ -59,6 +59,36 @@ try {
   const conversation = await import(pathToFileURL(join(outDir, "src/grok/conversation.js")));
   const imageCards = await import(pathToFileURL(join(outDir, "src/grok/imageCards.js")));
   const imagine = await import(pathToFileURL(join(outDir, "src/grok/imagineExperimental.js")));
+  const models = await import(pathToFileURL(join(outDir, "src/grok/models.js")));
+
+  assert.equal(
+    models.isModelAvailableForPools("grok-imagine-image-lite", { basic: false, super: false, heavy: false }),
+    false,
+  );
+  assert.equal(
+    models.isModelAvailableForPools("grok-imagine-image-lite", { basic: true, super: false, heavy: false }),
+    true,
+  );
+  assert.equal(
+    models.isModelAvailableForPools("grok-imagine-image", { basic: true, super: false, heavy: false }),
+    false,
+  );
+  assert.equal(
+    models.isModelAvailableForPools("grok-imagine-image", { basic: false, super: true, heavy: false }),
+    true,
+  );
+  assert.equal(
+    models.isModelAvailableForPools("grok-4.20-heavy", { basic: false, super: true, heavy: false }),
+    false,
+  );
+  assert.equal(
+    models.isModelAvailableForPools("grok-4.20-heavy", { basic: false, super: false, heavy: true }),
+    true,
+  );
+  assert.equal(
+    models.isModelAvailableForPools("grok-4.20-auto", { basic: false, super: false, heavy: true }),
+    true,
+  );
 
   const video = conversation.buildConversationPayload({
     requestModel: "grok-imagine-video",
