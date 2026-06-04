@@ -1,0 +1,120 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const root = new URL("..", import.meta.url);
+const outDir = mkdtempSync(join(tmpdir(), "grok2api-protocol-"));
+
+function walkJsFiles(dir) {
+  const out = [];
+  for (const name of readdirSync(dir)) {
+    const file = join(dir, name);
+    if (statSync(file).isDirectory()) out.push(...walkJsFiles(file));
+    else if (file.endsWith(".js")) out.push(file);
+  }
+  return out;
+}
+
+function patchRelativeImports(dir) {
+  for (const file of walkJsFiles(dir)) {
+    const source = readFileSync(file, "utf8");
+    const patched = source.replace(
+      /(from\s+["'])(\.\.?\/[^"']+)(["'])/g,
+      (_m, prefix, spec, suffix) => {
+        if (/\.(?:js|json|wasm)$/.test(spec)) return `${prefix}${spec}${suffix}`;
+        return `${prefix}${spec}.js${suffix}`;
+      },
+    );
+    if (patched !== source) writeFileSync(file, patched);
+  }
+}
+
+try {
+  execFileSync(
+    "npx",
+    [
+      "tsc",
+      "-p",
+      "tsconfig.json",
+      "--outDir",
+      outDir,
+      "--rootDir",
+      ".",
+      "--noEmit",
+      "false",
+      "--declaration",
+      "false",
+      "--sourceMap",
+      "false",
+      "--pretty",
+      "false",
+    ],
+    { cwd: root, stdio: "pipe", shell: process.platform === "win32" },
+  );
+  patchRelativeImports(outDir);
+
+  const conversation = await import(pathToFileURL(join(outDir, "src/grok/conversation.js")));
+  const imagine = await import(pathToFileURL(join(outDir, "src/grok/imagineExperimental.js")));
+
+  const video = conversation.buildConversationPayload({
+    requestModel: "grok-imagine-video",
+    content: "city skyline",
+    imgIds: [],
+    imgUris: [],
+    postId: "post_123",
+    videoConfig: {
+      aspect_ratio: "16:9",
+      video_length: 6,
+      resolution: "HD",
+      preset: "normal",
+    },
+    settings: { temporary: true },
+  });
+
+  const videoConfig =
+    video.payload.responseMetadata?.modelConfigOverride?.modelMap?.videoGenModelConfig;
+  assert.equal(video.payload.modelName, "imagine-video-gen");
+  assert.equal(video.payload.toolOverrides, undefined);
+  assert.equal(video.payload.message, "city skyline --mode=normal");
+  assert.equal(videoConfig.parentPostId, "post_123");
+  assert.equal(videoConfig.aspectRatio, "16:9");
+  assert.equal(videoConfig.videoLength, 6);
+  assert.equal(videoConfig.resolutionName, "720p");
+  assert.equal(videoConfig.videoResolution, undefined);
+
+  const videoWithReference = conversation.buildConversationPayload({
+    requestModel: "grok-imagine-video",
+    content: "animate this",
+    imgIds: [],
+    imgUris: [],
+    postId: "post_ref",
+    videoImageReferences: ["https://assets.grok.com/users/demo/image/content"],
+    videoConfig: { video_length: 6 },
+    settings: { temporary: true },
+  });
+  const refVideoConfig =
+    videoWithReference.payload.responseMetadata?.modelConfigOverride?.modelMap?.videoGenModelConfig;
+  assert.equal(refVideoConfig.isVideoEdit, false);
+  assert.equal(refVideoConfig.isReferenceToVideo, true);
+  assert.deepEqual(refVideoConfig.imageReferences, ["https://assets.grok.com/users/demo/image/content"]);
+
+  const resetPayload = imagine.buildImagineWsResetPayload();
+  assert.equal(resetPayload.type, "conversation.item.create");
+  assert.equal(typeof resetPayload.timestamp, "number");
+  assert.deepEqual(resetPayload.item, { type: "message", content: [{ type: "reset" }] });
+
+  const imagePayload = imagine.buildImagineWsPayload("draw a cat", "req_1", "2:3", true);
+  assert.equal(imagePayload.item.content[0].type, "input_text");
+  assert.equal(imagePayload.item.content[0].properties.enable_side_by_side, true);
+  assert.equal(imagePayload.item.content[0].properties.enable_pro, true);
+  assert.equal(imagePayload.item.content[0].properties.aspect_ratio, "2:3");
+  assert.equal(
+    imagine.extractImagineImageIdFromUrl("https://assets.grok.com/users/demo/images/3f5e21f6-6c7d-48ca-a7aa-337b5591fb41.jpg?x=1"),
+    "3f5e21f6-6c7d-48ca-a7aa-337b5591fb41",
+  );
+} finally {
+  rmSync(outDir, { recursive: true, force: true });
+}

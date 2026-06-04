@@ -17,7 +17,9 @@ export interface OpenAIChatRequestBody {
   video_config?: {
     aspect_ratio?: string;
     video_length?: number;
+    seconds?: number;
     resolution?: string;
+    resolution_name?: string;
     preset?: string;
   };
 }
@@ -92,10 +94,13 @@ export function buildConversationPayload(args: {
   imgIds: string[];
   imgUris: string[];
   postId?: string;
+  videoImageReferences?: string[];
   videoConfig?: {
     aspect_ratio?: string;
     video_length?: number;
+    seconds?: number;
     resolution?: string;
+    resolution_name?: string;
     preset?: string;
   };
   settings: GrokSettings;
@@ -108,37 +113,42 @@ export function buildConversationPayload(args: {
     if (!postId) throw new Error("视频模型缺少 postId（需要先创建 media post）");
 
     const aspectRatio = (args.videoConfig?.aspect_ratio ?? "").trim() || "3:2";
-    const videoLengthRaw = Number(args.videoConfig?.video_length ?? 6);
-    const videoLength = Number.isFinite(videoLengthRaw) ? Math.max(1, Math.floor(videoLengthRaw)) : 6;
-    const resolution = (args.videoConfig?.resolution ?? "SD") === "HD" ? "HD" : "SD";
-    const preset = (args.videoConfig?.preset ?? "normal").trim();
+    const videoLengthRaw = Number(args.videoConfig?.seconds ?? args.videoConfig?.video_length ?? 6);
+    const rawVideoLength = Number.isFinite(videoLengthRaw) ? Math.max(1, Math.floor(videoLengthRaw)) : 6;
+    const videoLength = [6, 10, 12, 16, 20].includes(rawVideoLength) ? rawVideoLength : 6;
+    const resolutionName = normalizeVideoResolutionName(
+      args.videoConfig?.resolution_name ?? args.videoConfig?.resolution,
+    );
+    const preset = normalizeVideoPreset(args.videoConfig?.preset);
 
-    let modeFlag = "--mode=custom";
-    if (preset === "fun") modeFlag = "--mode=extremely-crazy";
-    else if (preset === "normal") modeFlag = "--mode=normal";
-    else if (preset === "spicy") modeFlag = "--mode=extremely-spicy-or-crazy";
+    const prompt = `${String(content || "").trim()} ${videoPresetFlag(preset)}`.trim();
 
-    const prompt = `${String(content || "").trim()} ${modeFlag}`.trim();
+    const videoGenModelConfig: Record<string, unknown> = {
+      parentPostId: postId,
+      aspectRatio,
+      videoLength,
+      resolutionName,
+    };
+    const imageReferences = (args.videoImageReferences ?? []).map((v) => String(v || "").trim()).filter(Boolean);
+    if (imageReferences.length) {
+      videoGenModelConfig.isVideoEdit = false;
+      videoGenModelConfig.isReferenceToVideo = true;
+      videoGenModelConfig.imageReferences = imageReferences;
+    }
 
     return {
       isVideoModel: true,
       referer: "https://grok.com/imagine",
       payload: {
         temporary: true,
-        modelName: "grok-3",
+        modelName: "imagine-video-gen",
         message: prompt,
-        toolOverrides: { videoGen: true },
         enableSideBySide: true,
         responseMetadata: {
           experiments: [],
           modelConfigOverride: {
             modelMap: {
-              videoGenModelConfig: {
-                parentPostId: postId,
-                aspectRatio,
-                videoLength,
-                videoResolution: resolution,
-              },
+              videoGenModelConfig,
             },
           },
         },
@@ -190,6 +200,30 @@ export function buildConversationPayload(args: {
       isAsyncChat: false,
     },
   };
+}
+
+function normalizeVideoResolutionName(input: unknown): "480p" | "720p" {
+  const value = String(input ?? "")
+    .trim()
+    .toLowerCase();
+  if (value === "480p" || value === "sd") return "480p";
+  if (value === "720p" || value === "hd") return "720p";
+  return "720p";
+}
+
+function normalizeVideoPreset(input: unknown): "fun" | "normal" | "spicy" | "custom" {
+  const value = String(input ?? "custom")
+    .trim()
+    .toLowerCase();
+  if (value === "fun" || value === "normal" || value === "spicy" || value === "custom") return value;
+  return "custom";
+}
+
+function videoPresetFlag(preset: "fun" | "normal" | "spicy" | "custom"): string {
+  if (preset === "fun") return "--mode=extremely-crazy";
+  if (preset === "normal") return "--mode=normal";
+  if (preset === "spicy") return "--mode=extremely-spicy-or-crazy";
+  return "--mode=custom";
 }
 
 export async function sendConversationRequest(args: {

@@ -457,7 +457,7 @@ adminRoutes.get("/api/v1/admin/imagine/ws", async (c) => {
       while (!socketClosed && localToken === runToken) {
         let chosen: { token: string; token_type: "sso" | "ssoSuper" } | null = null;
         try {
-          chosen = await selectBestToken(c.env.DB, "grok-imagine-1.0");
+          chosen = await selectBestToken(c.env.DB, "grok-imagine-image-pro");
           if (!chosen) {
             send({
               type: "error",
@@ -476,6 +476,7 @@ adminRoutes.get("/api/v1/admin/imagine/ws", async (c) => {
             cookie,
             settings: settings.grok,
             aspectRatio,
+            enablePro: true,
           });
           if (socketClosed || localToken !== runToken) break;
 

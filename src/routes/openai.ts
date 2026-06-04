@@ -3,7 +3,7 @@ import { cors } from "hono/cors";
 import type { Env } from "../env";
 import { requireApiAuth } from "../auth";
 import { buildSsoCookie, getSettings } from "../settings";
-import { isValidModel, MODEL_CONFIG, quotaFieldForModel } from "../grok/models";
+import { isValidModel, MODEL_CONFIG, quotaFieldForModel, type ModelCapability } from "../grok/models";
 import { extractContent, buildConversationPayload, sendConversationRequest } from "../grok/conversation";
 import { uploadImage } from "../grok/upload";
 import { getDynamicHeaders } from "../grok/headers";
@@ -511,8 +511,8 @@ function getTokenSuffix(token: string): string {
   return token.length >= 6 ? token.slice(-6) : token;
 }
 
-const IMAGE_GENERATION_MODEL_ID = "grok-imagine-1.0";
-const IMAGE_EDIT_MODEL_ID = "grok-imagine-1.0-edit";
+const IMAGE_GENERATION_MODEL_ID = "grok-imagine-image-lite";
+const IMAGE_EDIT_MODEL_ID = "grok-imagine-image-edit";
 
 function parseImageCount(input: unknown): number {
   const raw = Number(input ?? 1);
@@ -526,6 +526,34 @@ function parseImagePrompt(input: unknown): string {
 
 function parseImageModel(input: unknown, fallback: string): string {
   return String(input ?? fallback).trim() || fallback;
+}
+
+function assetUrlFromFileUri(fileUri: string): string {
+  const value = String(fileUri || "").trim();
+  if (!value) return "";
+  if (value.startsWith("http://") || value.startsWith("https://")) return value;
+  const path = value.startsWith("/") ? value : `/${value}`;
+  return `https://assets.grok.com${path}`;
+}
+
+function canonicalImageGenerationModel(model: string): string {
+  return model === "grok-imagine-1.0" ? IMAGE_GENERATION_MODEL_ID : model;
+}
+
+function canonicalImageEditModel(model: string): string {
+  return model === "grok-imagine-1.0-edit" ? IMAGE_EDIT_MODEL_ID : model;
+}
+
+function canonicalRequestModel(model: string): string {
+  if (model === "grok-imagine-1.0") return IMAGE_GENERATION_MODEL_ID;
+  if (model === "grok-imagine-1.0-edit") return IMAGE_EDIT_MODEL_ID;
+  if (model === "grok-imagine-1.0-video") return "grok-imagine-video";
+  return model;
+}
+
+function isCapabilityModel(model: string, capability: ModelCapability): boolean {
+  const cfg = MODEL_CONFIG[model];
+  return Boolean(cfg?.capabilities?.includes(capability));
 }
 
 function parseImageStream(input: unknown): boolean {
@@ -635,6 +663,7 @@ function imageGenerationMethod(settingsBundle: Awaited<ReturnType<typeof getSett
 }
 
 async function collectExperimentalGenerationImages(args: {
+  requestModel: string;
   prompt: string;
   n: number;
   cookie: string;
@@ -661,6 +690,7 @@ async function collectExperimentalGenerationImages(args: {
         cookie: args.cookie,
         settings: args.settings,
         aspectRatio: args.aspectRatio,
+        enablePro: args.requestModel === "grok-imagine-image-pro",
       }),
   );
   const rawUrls: string[] = [];
@@ -839,6 +869,7 @@ function createStreamErrorImageEventStream(args: {
 }
 
 function createExperimentalImageEventStream(args: {
+  requestModel: string;
   prompt: string;
   n: number;
   cookie: string;
@@ -921,6 +952,7 @@ function createExperimentalImageEventStream(args: {
               cookie: args.cookie,
               settings: args.settings,
               aspectRatio: args.aspectRatio,
+              enablePro: args.requestModel === "grok-imagine-image-pro",
               progressCb: ({ index, progress }) => {
                 emitPartial(toOutIndex(plan.offset, index), progress);
               },
@@ -959,6 +991,7 @@ function createExperimentalImageEventStream(args: {
         if (!Array.from(completedByIndex.values()).some((v) => v && v !== "error")) {
           try {
             const allImages = await collectExperimentalGenerationImages({
+              requestModel: args.requestModel,
               prompt: args.prompt,
               n: safeN,
               cookie: args.cookie,
@@ -1030,8 +1063,12 @@ function streamHeaders(): Record<string, string> {
 
 function isValidImageModel(model: string): boolean {
   if (!isValidModel(model)) return false;
-  const cfg = MODEL_CONFIG[model];
-  return Boolean(cfg?.is_image_model);
+  return isCapabilityModel(model, "image");
+}
+
+function isValidImageEditModel(model: string): boolean {
+  if (!isValidModel(model)) return false;
+  return isCapabilityModel(model, "image_edit");
 }
 
 function invalidResponseFormatMessage(): string {
@@ -1116,26 +1153,14 @@ function nonEmptyPromptOrError(prompt: string) {
 }
 
 function invalidGenerationModelOrError(model: string) {
-  if (model !== IMAGE_GENERATION_MODEL_ID) {
-    return {
-      message: `The model '${IMAGE_GENERATION_MODEL_ID}' is required for image generations.`,
-      code: "model_not_supported",
-    };
-  }
   if (!isValidModel(model)) return { message: `Model '${model}' not supported`, code: "model_not_supported" };
   if (!isValidImageModel(model)) return { message: `Model '${model}' is not an image model`, code: "invalid_model" };
   return null;
 }
 
 function invalidEditModelOrError(model: string) {
-  if (model !== IMAGE_EDIT_MODEL_ID) {
-    return {
-      message: `The model '${IMAGE_EDIT_MODEL_ID}' is required for image edits.`,
-      code: "model_not_supported",
-    };
-  }
   if (!isValidModel(model)) return { message: `Model '${model}' not supported`, code: "model_not_supported" };
-  if (!isValidImageModel(model)) return { message: `Model '${model}' is not an image model`, code: "invalid_model" };
+  if (!isValidImageEditModel(model)) return { message: `Model '${model}' is not an image-edit model`, code: "invalid_model" };
   return null;
 }
 
@@ -1187,6 +1212,7 @@ openAiRoutes.get("/models", async (c) => {
     owned_by: "x-ai",
     display_name: cfg.display_name,
     description: cfg.description,
+    capabilities: cfg.capabilities,
     raw_model_path: cfg.raw_model_path,
     default_temperature: cfg.default_temperature,
     default_max_output_tokens: cfg.default_max_output_tokens,
@@ -1208,6 +1234,7 @@ openAiRoutes.get("/models/:modelId", async (c) => {
     owned_by: "x-ai",
     display_name: cfg.display_name,
     description: cfg.description,
+    capabilities: cfg.capabilities,
     raw_model_path: cfg.raw_model_path,
     default_temperature: cfg.default_temperature,
     default_max_output_tokens: cfg.default_max_output_tokens,
@@ -1244,7 +1271,7 @@ openAiRoutes.post("/chat/completions", async (c) => {
       };
     };
 
-    requestedModel = String(body.model ?? "");
+    requestedModel = canonicalRequestModel(String(body.model ?? ""));
     if (!requestedModel) return c.json(openAiError("Missing 'model'", "missing_model"), 400);
     if (!Array.isArray(body.messages)) return c.json(openAiError("Missing 'messages'", "missing_messages"), 400);
     if (!isValidModel(requestedModel))
@@ -1317,6 +1344,7 @@ openAiRoutes.post("/chat/completions", async (c) => {
           imgIds,
           imgUris,
           ...(postId ? { postId } : {}),
+          ...(isVideoModel && imgUris.length ? { videoImageReferences: imgUris.map(assetUrlFromFileUri).filter(Boolean) } : {}),
           ...(isVideoModel && body.video_config ? { videoConfig: body.video_config } : {}),
           settings: settingsBundle.grok,
         });
@@ -1760,7 +1788,7 @@ openAiRoutes.post("/images/generations", async (c) => {
     const promptErr = nonEmptyPromptOrError(prompt);
     if (promptErr) return c.json(openAiError(promptErr.message, promptErr.code), 400);
 
-    requestedModel = parseImageModel(body.model, IMAGE_GENERATION_MODEL_ID);
+    requestedModel = canonicalImageGenerationModel(parseImageModel(body.model, IMAGE_GENERATION_MODEL_ID));
     const modelErr = invalidGenerationModelOrError(requestedModel);
     if (modelErr) return c.json(openAiError(modelErr.message, modelErr.code), 400);
 
@@ -1812,6 +1840,7 @@ openAiRoutes.post("/images/generations", async (c) => {
         if (experimentalToken) {
           const experimentalCookie = buildCookie(experimentalToken.token, settingsBundle.grok);
           const streamBody = createExperimentalImageEventStream({
+            requestModel: requestedModel,
             prompt: imageCallPrompt("generation", prompt),
             n,
             cookie: experimentalCookie,
@@ -1918,6 +1947,7 @@ openAiRoutes.post("/images/generations", async (c) => {
         const experimentalCookie = buildCookie(experimentalToken.token, settingsBundle.grok);
         try {
           const urls = await collectExperimentalGenerationImages({
+            requestModel: requestedModel,
             prompt: imageCallPrompt("generation", prompt),
             n,
             cookie: experimentalCookie,
@@ -2029,7 +2059,7 @@ openAiRoutes.post("/images/edits", async (c) => {
     const promptErr = nonEmptyPromptOrError(prompt);
     if (promptErr) return c.json(openAiError(promptErr.message, promptErr.code), 400);
 
-    requestedModel = parseImageModel(form.get("model"), IMAGE_EDIT_MODEL_ID);
+    requestedModel = canonicalImageEditModel(parseImageModel(form.get("model"), IMAGE_EDIT_MODEL_ID));
     const modelErr = invalidEditModelOrError(requestedModel);
     if (modelErr) return c.json(openAiError(modelErr.message, modelErr.code), 400);
 

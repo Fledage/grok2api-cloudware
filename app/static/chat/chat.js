@@ -820,9 +820,10 @@ async function refreshModels() {
 
     const filtered = models.filter((m) => {
       const id = String(m.id || '');
-      if (currentTab === 'image') return id === 'grok-imagine-1.0';
-      if (currentTab === 'video') return id === 'grok-imagine-1.0-video';
-      return !/imagine/i.test(id) || id === 'grok-4-heavy';
+      const caps = Array.isArray(m.capabilities) ? m.capabilities.map((x) => String(x)) : [];
+      if (currentTab === 'image') return caps.includes('image');
+      if (currentTab === 'video') return caps.includes('video');
+      return !caps.includes('image') && !caps.includes('image_edit') && !caps.includes('video');
     });
 
     const filteredIds = [];
@@ -837,11 +838,11 @@ async function refreshModels() {
     });
 
     if (currentTab === 'image') {
-      sel.value = filteredIds.includes('grok-imagine-1.0') ? 'grok-imagine-1.0' : (filteredIds[0] || '');
+      sel.value = filteredIds.includes('grok-imagine-image-lite') ? 'grok-imagine-image-lite' : (filteredIds[0] || '');
       return;
     }
     if (currentTab === 'video') {
-      sel.value = filteredIds.includes('grok-imagine-1.0-video') ? 'grok-imagine-1.0-video' : (filteredIds[0] || '');
+      sel.value = filteredIds.includes('grok-imagine-video') ? 'grok-imagine-video' : (filteredIds[0] || '');
       return;
     }
     if (previousValue && filteredIds.includes(previousValue)) {
@@ -1204,7 +1205,7 @@ async function generateImage() {
 
   stopImageContinuous();
 
-  const model = String(q('model-select').value || 'grok-imagine-1.0').trim();
+  const model = String(q('model-select').value || 'grok-imagine-image-lite').trim();
   const n = Math.max(1, Math.min(10, Math.floor(Number(q('image-n').value || 1) || 1)));
   const stream = Boolean(q('stream-toggle').checked);
   const useStream = stream && n <= 2;
@@ -1259,15 +1260,15 @@ async function generateVideo() {
   const prompt = String(q('video-prompt').value || '').trim();
   if (!prompt) return showToast('请输入 prompt', 'warning');
 
-  const model = String(q('model-select').value || 'grok-imagine-1.0-video').trim();
+  const model = String(q('model-select').value || 'grok-imagine-video').trim();
   const stream = Boolean(q('stream-toggle').checked);
   const headers = { ...buildApiHeaders(), 'Content-Type': 'application/json' };
   if (!headers.Authorization) return showToast('请先填写 API Key', 'warning');
 
   const videoConfig = {
     aspect_ratio: String(q('video-aspect').value || '3:2'),
-    video_length: Number(q('video-length').value || 6),
-    resolution: String(q('video-resolution').value || 'SD'),
+    seconds: Number(q('video-length').value || 6),
+    resolution_name: String(q('video-resolution').value || '720p'),
     preset: String(q('video-preset').value || 'custom'),
   };
 

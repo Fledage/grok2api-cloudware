@@ -18,6 +18,7 @@ export type ImageGenerationMethod =
 const IMAGINE_WS_HTTP_API = "https://grok.com/ws/imagine/listen";
 const IMAGINE_REFERER = "https://grok.com/imagine";
 const ASSET_API = "https://assets.grok.com";
+const IMAGE_ID_PATTERN = /\/images\/([a-f0-9-]+)\.(?:png|jpe?g|webp)(?:[?#].*)?$/i;
 
 type WsJson = Record<string, unknown>;
 
@@ -122,6 +123,19 @@ function extractUrl(msg: WsJson): string {
   return "";
 }
 
+export function extractImagineImageIdFromUrl(raw: string): string {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  try {
+    const url = new URL(value, ASSET_API);
+    const match = url.pathname.match(/\/images\/([a-f0-9-]+)\.(?:png|jpe?g|webp)$/i);
+    return match?.[1] ?? "";
+  } catch {
+    const match = value.match(IMAGE_ID_PATTERN);
+    return match?.[1] ?? "";
+  }
+}
+
 function isCompleted(msg: WsJson, progress: number | null): boolean {
   const status = String(msg.current_status ?? msg.currentStatus ?? "")
     .trim()
@@ -130,7 +144,20 @@ function isCompleted(msg: WsJson, progress: number | null): boolean {
   return progress !== null && progress >= 100;
 }
 
-function buildImagineWsPayload(prompt: string, requestId: string, aspectRatio: string): WsJson {
+export function buildImagineWsResetPayload(): WsJson {
+  return {
+    type: "conversation.item.create",
+    timestamp: Date.now(),
+    item: { type: "message", content: [{ type: "reset" }] },
+  };
+}
+
+export function buildImagineWsPayload(
+  prompt: string,
+  requestId: string,
+  aspectRatio: string,
+  enablePro = false,
+): WsJson {
   return {
     type: "conversation.item.create",
     timestamp: Date.now(),
@@ -140,14 +167,16 @@ function buildImagineWsPayload(prompt: string, requestId: string, aspectRatio: s
         {
           requestId,
           text: prompt,
-          type: "input_scroll",
+          type: "input_text",
           properties: {
             section_count: 0,
             is_kids_mode: false,
             enable_nsfw: true,
             skip_upsampler: false,
+            enable_side_by_side: true,
             is_initial: false,
             aspect_ratio: aspectRatio,
+            enable_pro: enablePro,
           },
         },
       ],
@@ -162,6 +191,7 @@ export async function generateImagineWs(args: {
   settings: GrokSettings;
   timeoutMs?: number;
   aspectRatio?: string;
+  enablePro?: boolean;
   progressCb?: (progress: ImagineWsProgress) => void | Promise<void>;
   completedCb?: (completed: ImagineWsCompleted) => void | Promise<void>;
 }): Promise<string[]> {
@@ -186,10 +216,12 @@ export async function generateImagineWs(args: {
   }
 
   ws.accept();
-  ws.send(JSON.stringify(buildImagineWsPayload(args.prompt, requestId, aspectRatio)));
+  ws.send(JSON.stringify(buildImagineWsResetPayload()));
+  ws.send(JSON.stringify(buildImagineWsPayload(args.prompt, requestId, aspectRatio, Boolean(args.enablePro))));
 
   const imageIndexes = new Map<string, number>();
   const finalUrls = new Map<string, string>();
+  const lastImageUrls = new Map<string, string>();
 
   await new Promise<void>((resolve, reject) => {
     let finished = false;
@@ -210,7 +242,10 @@ export async function generateImagineWs(args: {
         return;
       }
 
-      const rawImageId = String(msg.id ?? msg.imageId ?? msg.image_id ?? "");
+      const imageUrl = extractUrl(msg);
+      const rawImageId = String(
+        msg.id ?? msg.imageId ?? msg.image_id ?? msg.job_id ?? extractImagineImageIdFromUrl(imageUrl),
+      );
       const imageId = rawImageId || `image-${imageIndexes.size}`;
       if (!imageIndexes.has(imageId)) imageIndexes.set(imageId, imageIndexes.size);
       const imageIndex = imageIndexes.get(imageId) ?? 0;
@@ -222,7 +257,7 @@ export async function generateImagineWs(args: {
         });
       }
 
-      const imageUrl = extractUrl(msg);
+      if (imageUrl) lastImageUrls.set(imageId, imageUrl);
       if (imageUrl && isCompleted(msg, progress)) {
         if (!finalUrls.has(imageId)) finalUrls.set(imageId, imageUrl);
         if (args.completedCb) {
@@ -231,6 +266,19 @@ export async function generateImagineWs(args: {
           });
         }
         if (finalUrls.size >= targetCount) finish();
+      }
+
+      if (!imageUrl && isCompleted(msg, progress)) {
+        const fallbackUrl = lastImageUrls.get(imageId);
+        if (fallbackUrl && !finalUrls.has(imageId)) {
+          finalUrls.set(imageId, fallbackUrl);
+          if (args.completedCb) {
+            Promise.resolve(args.completedCb({ index: imageIndex, url: fallbackUrl })).catch(() => {
+              // ignore callback failures
+            });
+          }
+          if (finalUrls.size >= targetCount) finish();
+        }
       }
     };
 

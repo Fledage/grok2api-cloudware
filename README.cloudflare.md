@@ -224,8 +224,9 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml config
 - POST /v1/chat/completions (supports stream: true)
 - GET /v1/models (model set aligns with `readme.md`, including latest additions/removals)
 - GET /v1/images/method: returns current image-generation mode (legacy or imagine_ws_experimental) for /chat and /admin/chat UI switching
-- POST /v1/images/generations: experimental mode supports size (aspect-ratio mapping) and concurrency (1..3)
-- POST /v1/images/edits: only accepts grok-imagine-1.0-edit
+- POST /v1/images/generations: accepts `grok-imagine-image-lite`, `grok-imagine-image`, `grok-imagine-image-pro` (`grok-imagine-1.0` remains a compatibility alias)
+- POST /v1/images/edits: accepts `grok-imagine-image-edit` (`grok-imagine-1.0-edit` remains a compatibility alias)
+- Video chat model: `grok-imagine-video` (`grok-imagine-1.0-video` remains a compatibility alias)
 - GET /images/<img_path>: reads from KV cache; on miss fetches assets.grok.com and writes back to KV (daily expiry/cleanup policy)
 - Note: Workers KV single-value size is limited (recommended <= 25MB); most video players use Range requests, which may bypass KV hits
 - Admin APIs: /api/*
