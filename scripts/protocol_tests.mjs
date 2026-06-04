@@ -57,6 +57,7 @@ try {
   patchRelativeImports(outDir);
 
   const conversation = await import(pathToFileURL(join(outDir, "src/grok/conversation.js")));
+  const imageCards = await import(pathToFileURL(join(outDir, "src/grok/imageCards.js")));
   const imagine = await import(pathToFileURL(join(outDir, "src/grok/imagineExperimental.js")));
 
   const video = conversation.buildConversationPayload({
@@ -114,6 +115,37 @@ try {
   assert.equal(
     imagine.extractImagineImageIdFromUrl("https://assets.grok.com/users/demo/images/3f5e21f6-6c7d-48ca-a7aa-337b5591fb41.jpg?x=1"),
     "3f5e21f6-6c7d-48ca-a7aa-337b5591fb41",
+  );
+
+  const generatedCardImage = imageCards.extractImageChunkFromCardAttachment({
+    jsonData: JSON.stringify({
+      id: "card_1",
+      image_chunk: {
+        progress: 100,
+        imageUuid: "img_1",
+        imageUrl: "users/demo/generated/example.jpg",
+        moderated: false,
+      },
+    }),
+  });
+  assert.deepEqual(generatedCardImage, {
+    progress: 100,
+    imageUuid: "img_1",
+    url: "https://assets.grok.com/users/demo/generated/example.jpg",
+    moderated: false,
+  });
+
+  assert.equal(
+    imageCards.extractImageChunkFromCardAttachment({
+      jsonData: JSON.stringify({
+        image_chunk: {
+          progress: 100,
+          imageUrl: "/users/demo/generated/blocked.jpg",
+          moderated: true,
+        },
+      }),
+    })?.url,
+    undefined,
   );
 } finally {
   rmSync(outDir, { recursive: true, force: true });

@@ -8,6 +8,7 @@ import { extractContent, buildConversationPayload, sendConversationRequest } fro
 import { uploadImage } from "../grok/upload";
 import { getDynamicHeaders } from "../grok/headers";
 import { createMediaPost, createPost } from "../grok/create";
+import { extractImageChunkFromCardAttachment } from "../grok/imageCards";
 import {
   buildAnthropicJsonFromChat,
   buildResponsesJsonFromChat,
@@ -281,9 +282,7 @@ function pickImageResults(images: string[], n: number): string[] {
     }
     return picked;
   }
-  const picked = images.slice();
-  while (picked.length < n) picked.push("error");
-  return picked;
+  return images.slice();
 }
 
 function normalizeImageMime(mime: string): string {
@@ -359,6 +358,8 @@ async function collectImageUrls(resp: Response): Promise<string[]> {
     const err = data?.error;
     if (err?.message) throw new Error(String(err.message));
     const grok = data?.result?.response;
+    const cardImage = extractImageChunkFromCardAttachment(grok?.cardAttachment);
+    if (cardImage?.url) allUrls.push(cardImage.url);
     const urls = normalizeGeneratedImageUrls(grok?.modelResponse?.generatedImageUrls);
     if (urls.length) allUrls.push(...urls);
   }
@@ -447,6 +448,30 @@ function createImageEventStream(args: {
               );
             }
 
+            const cardImage = extractImageChunkFromCardAttachment(resp.cardAttachment);
+            if (cardImage) {
+              if (cardImage.progress !== undefined) {
+                controller.enqueue(
+                  encoder.encode(
+                    buildImageSse("image_generation.partial_image", {
+                      type: "image_generation.partial_image",
+                      [responseField]: "",
+                      index: args.n === 1 ? 0 : Math.min(finalImages.length, args.n - 1),
+                      progress: cardImage.progress,
+                    }),
+                  ),
+                );
+              }
+              if (cardImage.url) {
+                const converted = await convertRawUrlByFormat(cardImage.url, args.responseFormat, {
+                  baseUrl: args.baseUrl,
+                  cookie: args.cookie,
+                  settings: args.settings,
+                });
+                if (converted) finalImages.push(converted);
+              }
+            }
+
             const rawUrls = normalizeGeneratedImageUrls(resp?.modelResponse?.generatedImageUrls);
             if (rawUrls.length) {
               for (const rawUrl of rawUrls) {
@@ -462,14 +487,22 @@ function createImageEventStream(args: {
           }
         }
 
-        for (let i = 0; i < finalImages.length; i++) {
-          if (args.n === 1 && i !== targetIndex) continue;
+        const dedupedFinalImages = dedupeImages(finalImages);
+        const selectedImages =
+          args.n === 1
+            ? dedupedFinalImages.length
+              ? [dedupedFinalImages[targetIndex ?? 0] ?? dedupedFinalImages[0] ?? ""].filter(Boolean)
+              : []
+            : dedupedFinalImages.slice(0, args.n);
+        if (!selectedImages.length) throw new Error("Image generation returned no images");
+
+        for (let i = 0; i < selectedImages.length; i++) {
           const outIndex = args.n === 1 ? 0 : i;
           controller.enqueue(
             encoder.encode(
               buildImageSse("image_generation.completed", {
                 type: "image_generation.completed",
-                [responseField]: finalImages[i] ?? "",
+                [responseField]: selectedImages[i] ?? "",
                 index: outIndex,
                 usage: {
                   total_tokens: 50,
@@ -1169,7 +1202,11 @@ function baseUrlFromSettings(settingsBundle: Awaited<ReturnType<typeof getSettin
 }
 
 function imageCallPrompt(kind: "generation" | "edit", prompt: string): string {
-  return kind === "edit" ? `Image Edit: ${prompt}` : `Image Generation: ${prompt}`;
+  return kind === "edit" ? `Image Edit: ${prompt}` : `Drawing: ${prompt}`;
+}
+
+function imagineWsPrompt(prompt: string): string {
+  return prompt;
 }
 
 function imageFormatDefault(settingsBundle: Awaited<ReturnType<typeof getSettings>>): string {
@@ -1841,7 +1878,7 @@ openAiRoutes.post("/images/generations", async (c) => {
           const experimentalCookie = buildCookie(experimentalToken.token, settingsBundle.grok);
           const streamBody = createExperimentalImageEventStream({
             requestModel: requestedModel,
-            prompt: imageCallPrompt("generation", prompt),
+            prompt: imagineWsPrompt(prompt),
             n,
             cookie: experimentalCookie,
             settings: settingsBundle.grok,
@@ -1948,7 +1985,7 @@ openAiRoutes.post("/images/generations", async (c) => {
         try {
           const urls = await collectExperimentalGenerationImages({
             requestModel: requestedModel,
-            prompt: imageCallPrompt("generation", prompt),
+            prompt: imagineWsPrompt(prompt),
             n,
             cookie: experimentalCookie,
             settings: settingsBundle.grok,
@@ -2005,6 +2042,7 @@ openAiRoutes.post("/images/generations", async (c) => {
     },
     );
     const urls = dedupeImages(urlsNested.flat().filter(Boolean));
+    if (!urls.length) throw new Error("Image generation returned no images");
     const selected = pickImageResults(urls, n);
 
     await recordImageLog({
@@ -2291,6 +2329,7 @@ openAiRoutes.post("/images/edits", async (c) => {
       });
     });
     const urls = dedupeImages(urlsNested.flat().filter(Boolean));
+    if (!urls.length) throw new Error("Image edit returned no images");
     const selected = pickImageResults(urls, n);
 
     await recordImageLog({
