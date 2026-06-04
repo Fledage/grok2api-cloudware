@@ -60,3 +60,75 @@ export function extractImageChunkFromCardAttachment(cardAttachment: unknown): Im
     moderated,
   };
 }
+
+function extractCookieValue(cookie: string, name: string): string {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = String(cookie || "").match(new RegExp(`(?:^|;\\s*)${escaped}=([^;]+)`));
+  return match?.[1] ? decodeURIComponent(match[1]) : "";
+}
+
+export function resolveAssetContentUrl(assetId: unknown, cookie = ""): string {
+  if (typeof assetId !== "string") return "";
+  const id = assetId.trim();
+  if (!id) return "";
+  const userId = extractCookieValue(cookie, "x-userid");
+  if (!userId) return "";
+  return `${GROK_ASSET_ORIGIN}/users/${encodeURIComponent(userId)}/${encodeURIComponent(id)}/content`;
+}
+
+export function extractModelResponseImageUrls(modelResponse: unknown, cookie = ""): string[] {
+  const model = asRecord(modelResponse);
+  if (!model) return [];
+
+  const out: string[] = [];
+  const urls = model.generatedImageUrls;
+  if (Array.isArray(urls)) {
+    for (const url of urls) {
+      const normalized = normalizeGrokAssetUrl(url);
+      if (normalized) out.push(normalized);
+    }
+  }
+
+  const attachments = model.fileAttachments;
+  if (Array.isArray(attachments)) {
+    for (const attachment of attachments) {
+      const resolved = resolveAssetContentUrl(attachment, cookie);
+      if (resolved) out.push(resolved);
+    }
+  }
+
+  return out;
+}
+
+export function extractStreamingImageUrls(streamingResponse: unknown, cookie = ""): string[] {
+  const stream = asRecord(streamingResponse);
+  if (!stream) return [];
+
+  const progressRaw = Number(stream.progress);
+  const progress = Number.isFinite(progressRaw) ? Math.floor(progressRaw) : 0;
+  if (progress < 100 || Boolean(stream.moderated)) return [];
+
+  const rawUrl = normalizeGrokAssetUrl(stream.imageUrl);
+  if (rawUrl) return [rawUrl];
+
+  const assetUrl = resolveAssetContentUrl(stream.assetId, cookie);
+  return assetUrl ? [assetUrl] : [];
+}
+
+export function extractResponseImageUrls(response: unknown, cookie = ""): string[] {
+  const resp = asRecord(response);
+  if (!resp) return [];
+
+  const out: string[] = [];
+  const cardImage = extractImageChunkFromCardAttachment(resp.cardAttachment);
+  if (cardImage?.url) out.push(cardImage.url);
+  out.push(...extractStreamingImageUrls(resp.streamingImageGenerationResponse, cookie));
+  out.push(...extractModelResponseImageUrls(resp.modelResponse, cookie));
+
+  const seen = new Set<string>();
+  return out.filter((url) => {
+    if (!url || seen.has(url)) return false;
+    seen.add(url);
+    return true;
+  });
+}

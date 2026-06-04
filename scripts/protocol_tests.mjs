@@ -60,6 +60,7 @@ try {
   const imageCards = await import(pathToFileURL(join(outDir, "src/grok/imageCards.js")));
   const imagine = await import(pathToFileURL(join(outDir, "src/grok/imagineExperimental.js")));
   const models = await import(pathToFileURL(join(outDir, "src/grok/models.js")));
+  const videoApi = await import(pathToFileURL(join(outDir, "src/grok/video.js")));
 
   assert.equal(
     models.isModelAvailableForPools("grok-imagine-image-lite", { basic: false, super: false, heavy: false }),
@@ -132,6 +133,33 @@ try {
   assert.equal(refVideoConfig.isReferenceToVideo, true);
   assert.deepEqual(refVideoConfig.imageReferences, ["https://assets.grok.com/users/demo/image/content"]);
 
+  assert.deepEqual(videoApi.resolveVideoSize("1280x720"), { aspectRatio: "16:9", resolutionName: "720p" });
+  assert.deepEqual(videoApi.resolveVideoSize("1024x1024"), { aspectRatio: "1:1", resolutionName: "720p" });
+  assert.equal(videoApi.resolveVideoSeconds("20"), 20);
+  assert.throws(() => videoApi.resolveVideoSeconds(8), /seconds must be one of/);
+  assert.equal(videoApi.normalizeVideoPreset("spicy"), "spicy");
+  assert.equal(videoApi.normalizeVideoPreset("unknown"), "custom");
+
+  assert.equal(
+    videoApi.extractVideoUrlFromChatCompletion({
+      choices: [
+        {
+          message: {
+            content:
+              '<video src="https://grok2api.example/images/u_abc" controls="controls"></video>',
+          },
+        },
+      ],
+    }),
+    "https://grok2api.example/images/u_abc",
+  );
+  assert.equal(
+    videoApi.extractVideoUrlFromChatCompletion({
+      choices: [{ message: { content: '<a href="https://grok2api.example/images/u_def">video</a>' } }],
+    }),
+    "https://grok2api.example/images/u_def",
+  );
+
   const resetPayload = imagine.buildImagineWsResetPayload();
   assert.equal(resetPayload.type, "conversation.item.create");
   assert.equal(typeof resetPayload.timestamp, "number");
@@ -176,6 +204,30 @@ try {
       }),
     })?.url,
     undefined,
+  );
+
+  assert.deepEqual(
+    imageCards.extractModelResponseImageUrls(
+      {
+        fileAttachments: ["asset_123"],
+      },
+      "sso=demo; x-userid=user_abc",
+    ),
+    ["https://assets.grok.com/users/user_abc/asset_123/content"],
+  );
+
+  assert.deepEqual(
+    imageCards.extractResponseImageUrls(
+      {
+        streamingImageGenerationResponse: {
+          progress: 100,
+          imageUrl: "/users/demo/generated/final.jpg",
+          moderated: false,
+        },
+      },
+      "sso=demo; x-userid=user_abc",
+    ),
+    ["https://assets.grok.com/users/demo/generated/final.jpg"],
   );
 } finally {
   rmSync(outDir, { recursive: true, force: true });

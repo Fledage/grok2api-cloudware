@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import type { Env } from "../env";
 import { requireApiAuth } from "../auth";
@@ -14,7 +14,16 @@ import { extractContent, buildConversationPayload, sendConversationRequest } fro
 import { uploadImage } from "../grok/upload";
 import { getDynamicHeaders } from "../grok/headers";
 import { createMediaPost, createPost } from "../grok/create";
-import { extractImageChunkFromCardAttachment } from "../grok/imageCards";
+import { extractImageChunkFromCardAttachment, extractResponseImageUrls } from "../grok/imageCards";
+import {
+  extractVideoUrlFromChatCompletion,
+  normalizeVideoPreset,
+  resolveVideoResolutionName,
+  resolveVideoSeconds,
+  resolveVideoSize,
+  VIDEO_MODEL_ID,
+  VIDEO_QUALITY,
+} from "../grok/video";
 import {
   buildAnthropicJsonFromChat,
   buildResponsesJsonFromChat,
@@ -48,6 +57,7 @@ import { nextLocalMidnightExpirationSeconds } from "../kv/cleanup";
 import { nowMs } from "../utils/time";
 import { arrayBufferToBase64 } from "../utils/base64";
 import { upsertCacheRow } from "../repo/cache";
+import { createVideoJob, getVideoJob, updateVideoJob, videoJobToResponse, type VideoJobRow } from "../repo/videoJobs";
 
 function openAiError(message: string, code: string): Record<string, unknown> {
   return { error: { message, type: "invalid_request_error", code } };
@@ -104,6 +114,7 @@ async function runTasksSettledWithLimit<T, R>(
 }
 
 export const openAiRoutes = new Hono<{ Bindings: Env; Variables: { apiAuth: ApiAuthInfo } }>();
+type OpenAiContext = Context<{ Bindings: Env; Variables: { apiAuth: ApiAuthInfo } }>;
 
 openAiRoutes.use(
   "/*",
@@ -350,7 +361,7 @@ async function convertRawUrlByFormat(
   return fetchImageAsBase64({ rawUrl, cookie: args.cookie, settings: args.settings });
 }
 
-async function collectImageUrls(resp: Response): Promise<string[]> {
+async function collectImageUrls(resp: Response, cookie = ""): Promise<string[]> {
   const text = await resp.text();
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
   const allUrls: string[] = [];
@@ -364,9 +375,7 @@ async function collectImageUrls(resp: Response): Promise<string[]> {
     const err = data?.error;
     if (err?.message) throw new Error(String(err.message));
     const grok = data?.result?.response;
-    const cardImage = extractImageChunkFromCardAttachment(grok?.cardAttachment);
-    if (cardImage?.url) allUrls.push(cardImage.url);
-    const urls = normalizeGeneratedImageUrls(grok?.modelResponse?.generatedImageUrls);
+    const urls = extractResponseImageUrls(grok, cookie);
     if (urls.length) allUrls.push(...urls);
   }
   return allUrls;
@@ -478,7 +487,7 @@ function createImageEventStream(args: {
               }
             }
 
-            const rawUrls = normalizeGeneratedImageUrls(resp?.modelResponse?.generatedImageUrls);
+            const rawUrls = extractResponseImageUrls(resp, args.cookie);
             if (rawUrls.length) {
               for (const rawUrl of rawUrls) {
                 const converted = await convertRawUrlByFormat(rawUrl, args.responseFormat, {
@@ -662,7 +671,7 @@ async function runImageCall(args: {
     const txt = await upstream.text().catch(() => "");
     throw new Error(`Upstream ${upstream.status}: ${txt.slice(0, 200)}`);
   }
-  const rawUrls = await collectImageUrls(upstream);
+  const rawUrls = await collectImageUrls(upstream, args.cookie);
   const converted = await Promise.all(
     rawUrls.map((rawUrl) =>
       convertRawUrlByFormat(rawUrl, args.responseFormat, {
@@ -771,7 +780,7 @@ async function runExperimentalImageEditCall(args: {
     cookie: args.cookie,
     settings: args.settings,
   });
-  const rawUrls = await collectImageUrls(upstream);
+  const rawUrls = await collectImageUrls(upstream, args.cookie);
   const converted = await Promise.all(
     rawUrls.map((rawUrl) =>
       convertRawUrlByFormat(rawUrl, args.responseFormat, {
@@ -1197,6 +1206,10 @@ function invalidGenerationModelOrError(model: string) {
   return null;
 }
 
+function videoNotReadyResponse(message = "Video content is not ready yet"): Record<string, unknown> {
+  return openAiError(message, "video_not_ready");
+}
+
 function invalidEditModelOrError(model: string) {
   if (!isValidModel(model)) return { message: `Model '${model}' not supported`, code: "model_not_supported" };
   if (!isValidImageEditModel(model)) return { message: `Model '${model}' is not an image-edit model`, code: "invalid_model" };
@@ -1503,6 +1516,213 @@ openAiRoutes.post("/chat/completions", async (c) => {
     });
     return c.json(openAiError("Internal error", "internal_error"), 500);
   }
+});
+
+async function parseVideoCreateInput(c: OpenAiContext): Promise<{
+  model: string;
+  prompt: string;
+  seconds: number;
+  size: string;
+  resolutionName: "480p" | "720p";
+  preset: "fun" | "normal" | "spicy" | "custom";
+  inputReferences: string[];
+}> {
+  const contentType = c.req.header("Content-Type") || "";
+  let raw: Record<string, unknown> = {};
+  const inputReferences: string[] = [];
+
+  if (contentType.toLowerCase().includes("multipart/form-data")) {
+    const form = await c.req.formData();
+    for (const key of ["model", "prompt", "seconds", "video_length", "size", "resolution_name", "resolution", "preset"]) {
+      const value = form.get(key);
+      if (typeof value === "string") raw[key] = value;
+    }
+    const references = [...form.getAll("input_reference[]"), ...form.getAll("input_reference")];
+    for (const value of references) {
+      if (typeof value === "string" && value.trim()) inputReferences.push(value.trim());
+    }
+    const files = references.filter((value): value is File => value instanceof File);
+    const settingsBundle = await getSettings(c.env);
+    const chosen = await selectBestToken(c.env.DB, VIDEO_MODEL_ID);
+    if (!chosen && files.length) throw new Error("No available token");
+    const cookie = chosen ? buildCookie(chosen.token, settingsBundle.grok) : "";
+    for (const file of files.slice(0, 7)) {
+      const bytes = await file.arrayBuffer();
+      if (!bytes.byteLength) continue;
+      const mime = parseAllowedImageMime(file);
+      if (!mime) throw new Error("input_reference must be an image");
+      const dataUrl = `data:${mime};base64,${arrayBufferToBase64(bytes)}`;
+      const uploaded = await uploadImage(dataUrl, cookie, settingsBundle.grok);
+      if (uploaded.fileUri) inputReferences.push(assetUrlFromFileUri(uploaded.fileUri));
+    }
+  } else {
+    raw = ((await c.req.json().catch(() => ({}))) || {}) as Record<string, unknown>;
+    const refs = raw.input_reference ?? raw.input_references;
+    if (Array.isArray(refs)) {
+      for (const item of refs) {
+        const url =
+          typeof item === "string"
+            ? item
+            : typeof (item as Record<string, unknown>)?.image_url === "string"
+              ? String((item as Record<string, unknown>).image_url)
+              : "";
+        if (url.trim()) inputReferences.push(url.trim());
+      }
+    }
+  }
+
+  const model = canonicalRequestModel(String(raw.model ?? VIDEO_MODEL_ID));
+  if (!model) throw new Error("Missing 'model'");
+  if (!isValidModel(model) || !MODEL_CONFIG[model]?.is_video_model) throw new Error(`Model '${model}' is not a video model`);
+  const prompt = String(raw.prompt ?? "").trim();
+  if (!prompt) throw new Error("prompt cannot be empty");
+  const seconds = resolveVideoSeconds(raw.seconds ?? raw.video_length);
+  const size = String(raw.size ?? "720x1280").trim() || "720x1280";
+  const sizeInfo = resolveVideoSize(size);
+  const resolutionName = resolveVideoResolutionName(raw.resolution_name ?? raw.resolution, sizeInfo.resolutionName);
+  const preset = normalizeVideoPreset(raw.preset);
+
+  return {
+    model,
+    prompt,
+    seconds,
+    size,
+    resolutionName,
+    preset,
+    inputReferences: inputReferences.slice(0, 7),
+  };
+}
+
+async function runVideoJob(c: OpenAiContext, job: VideoJobRow, args: {
+  resolutionName: "480p" | "720p";
+  preset: "fun" | "normal" | "spicy" | "custom";
+  inputReferences: string[];
+  origin: string;
+  keyName: string;
+  ip: string;
+}) {
+  const startedAt = Date.now();
+  try {
+    await updateVideoJob(c.env.DB, job.id, { status: "in_progress", progress: 5 });
+    const videoConfig = resolveVideoSize(job.size);
+    const messages = [
+      {
+        role: "user",
+        content: args.inputReferences.length
+          ? [
+              { type: "text", text: job.prompt },
+              ...args.inputReferences.map((url) => ({ type: "image_url", image_url: { url } })),
+            ]
+          : job.prompt,
+      },
+    ];
+    const req = new Request(`${args.origin}/v1/chat/completions`, {
+      method: "POST",
+      headers: c.req.raw.headers,
+      body: JSON.stringify({
+        model: job.model,
+        messages,
+        stream: false,
+        video_config: {
+          aspect_ratio: videoConfig.aspectRatio,
+          video_length: Number(job.seconds),
+          resolution_name: args.resolutionName,
+          preset: args.preset,
+        },
+      }),
+    });
+    const resp = await openAiRoutes.fetch(req, c.env, c.executionCtx);
+    const payload = await resp.json().catch(() => null);
+    if (!resp.ok) {
+      const message = payload && typeof payload === "object"
+        ? String((payload as any)?.error?.message ?? resp.statusText)
+        : resp.statusText;
+      throw new Error(message);
+    }
+    const contentUrl = extractVideoUrlFromChatCompletion(payload);
+    if (!contentUrl) throw new Error("Video generation returned no content URL");
+    await updateVideoJob(c.env.DB, job.id, {
+      status: "completed",
+      progress: 100,
+      video_url: contentUrl,
+      content_url: contentUrl,
+    });
+    await addRequestLog(c.env.DB, {
+      ip: args.ip,
+      model: job.model,
+      duration: Number(((Date.now() - startedAt) / 1000).toFixed(2)),
+      status: 200,
+      key_name: args.keyName,
+      token_suffix: "",
+      error: "",
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await updateVideoJob(c.env.DB, job.id, {
+      status: "failed",
+      progress: 100,
+      error: message,
+    });
+    await addRequestLog(c.env.DB, {
+      ip: args.ip,
+      model: job.model,
+      duration: Number(((Date.now() - startedAt) / 1000).toFixed(2)),
+      status: 500,
+      key_name: args.keyName,
+      token_suffix: "",
+      error: message,
+    });
+  }
+}
+
+openAiRoutes.post("/videos", async (c) => {
+  const ip = getClientIp(c.req.raw);
+  const keyName = c.get("apiAuth").name ?? "Unknown";
+  const origin = new URL(c.req.url).origin;
+  try {
+    const parsed = await parseVideoCreateInput(c);
+    const quota = await enforceQuota({
+      env: c.env,
+      apiAuth: c.get("apiAuth"),
+      model: parsed.model,
+      kind: "video",
+    });
+    if (!quota.ok) return quota.resp;
+
+    const job = await createVideoJob(c.env.DB, {
+      model: parsed.model,
+      prompt: parsed.prompt,
+      seconds: String(parsed.seconds),
+      size: parsed.size,
+      quality: VIDEO_QUALITY,
+    });
+    c.executionCtx.waitUntil(
+      runVideoJob(c, job, {
+        resolutionName: parsed.resolutionName,
+        preset: parsed.preset,
+        inputReferences: parsed.inputReferences,
+        origin,
+        keyName,
+        ip,
+      }),
+    );
+    return c.json(videoJobToResponse(job), 202);
+  } catch (error) {
+    return c.json(openAiError(error instanceof Error ? error.message : "Internal error", "invalid_video_request"), 400);
+  }
+});
+
+openAiRoutes.get("/videos/:videoId", async (c) => {
+  const job = await getVideoJob(c.env.DB, c.req.param("videoId"));
+  if (!job) return c.json(openAiError(`Video '${c.req.param("videoId")}' not found`, "video_not_found"), 404);
+  return c.json(videoJobToResponse(job));
+});
+
+openAiRoutes.get("/videos/:videoId/content", async (c) => {
+  const job = await getVideoJob(c.env.DB, c.req.param("videoId"));
+  if (!job) return c.json(openAiError(`Video '${c.req.param("videoId")}' not found`, "video_not_found"), 404);
+  if (job.status !== "completed" || !job.content_url) return c.json(videoNotReadyResponse(), 409);
+  return c.redirect(job.content_url, 302);
 });
 
 openAiRoutes.post("/responses", async (c) => {

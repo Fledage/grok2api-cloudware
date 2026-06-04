@@ -1,4 +1,5 @@
 import type { GrokSettings, GlobalSettings } from "../settings";
+import { extractResponseImageUrls } from "./imageCards";
 import type { ParsedToolCall } from "./tooling";
 import { ToolSieve, parseToolCalls } from "./tooling";
 
@@ -141,29 +142,6 @@ function encodeAssetPath(raw: string): string {
     const p = raw.startsWith("/") ? raw : `/${raw}`;
     return `p_${base64UrlEncode(p)}`;
   }
-}
-
-function normalizeGeneratedAssetUrls(input: unknown): string[] {
-  if (!Array.isArray(input)) return [];
-
-  const out: string[] = [];
-  for (const v of input) {
-    if (typeof v !== "string") continue;
-    const s = v.trim();
-    if (!s) continue;
-    if (s === "/") continue;
-
-    try {
-      const u = new URL(s);
-      if (u.pathname === "/" && !u.search && !u.hash) continue;
-    } catch {
-      // ignore (path-style strings are allowed)
-    }
-
-    out.push(s);
-  }
-
-  return out;
 }
 
 export function createOpenAiStreamFromGrokNdjson(
@@ -365,7 +343,7 @@ export function createOpenAiStreamFromGrokNdjson(
             if (isImage) {
               const modelResp = grok.modelResponse;
               if (modelResp) {
-                const urls = normalizeGeneratedAssetUrls(modelResp.generatedImageUrls);
+                const urls = extractResponseImageUrls(grok, opts.cookie);
                 if (urls.length) {
                   const linesOut: string[] = [];
                   for (const u of urls) {
@@ -553,7 +531,7 @@ export async function parseOpenAiFromGrokNdjson(
     if (typeof modelResp.message === "string") content = modelResp.message;
 
     const rawUrls = modelResp.generatedImageUrls;
-    const urls = normalizeGeneratedAssetUrls(rawUrls);
+    const urls = extractResponseImageUrls(grok, opts.cookie);
     if (urls.length) {
       for (const u of urls) {
         const imgPath = encodeAssetPath(u);
