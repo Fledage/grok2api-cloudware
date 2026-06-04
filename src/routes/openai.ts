@@ -16,11 +16,16 @@ import { getDynamicHeaders } from "../grok/headers";
 import { createMediaPost, createPost } from "../grok/create";
 import { extractImageChunkFromCardAttachment, extractResponseImageUrls } from "../grok/imageCards";
 import {
+  buildVideoExtendPayload,
+  buildVideoSegmentLengths,
+  extractVideoArtifactFromNdjson,
   extractVideoUrlFromChatCompletion,
   normalizeVideoPreset,
   resolveVideoResolutionName,
   resolveVideoSeconds,
   resolveVideoSize,
+  videoExtendStartTime,
+  type VideoArtifactInfo,
   VIDEO_MODEL_ID,
   VIDEO_QUALITY,
 } from "../grok/video";
@@ -1593,6 +1598,32 @@ async function parseVideoCreateInput(c: OpenAiContext): Promise<{
   };
 }
 
+function toOpenAiVideoProxyUrl(origin: string, settingsBundle: Awaited<ReturnType<typeof getSettings>>, rawUrl: string): string {
+  const baseUrl = baseUrlFromSettings(settingsBundle, origin);
+  return toProxyUrl(baseUrl, encodeAssetPath(rawUrl));
+}
+
+async function runVideoSegmentCall(args: {
+  payload: Record<string, unknown>;
+  cookie: string;
+  settings: Awaited<ReturnType<typeof getSettings>>["grok"];
+  referer: string;
+}): Promise<VideoArtifactInfo> {
+  const upstream = await sendConversationRequest({
+    payload: args.payload,
+    cookie: args.cookie,
+    settings: args.settings,
+    referer: args.referer,
+  });
+  const text = await upstream.text().catch(() => "");
+  if (!upstream.ok) {
+    throw new Error(`Video upstream ${upstream.status}: ${text.slice(0, 200)}`);
+  }
+  const artifact = extractVideoArtifactFromNdjson(text, args.cookie);
+  if (!artifact.videoUrl) throw new Error("Video generation returned no final video URL");
+  return artifact;
+}
+
 async function runVideoJob(c: OpenAiContext, job: VideoJobRow, args: {
   resolutionName: "480p" | "720p";
   preset: "fun" | "normal" | "spicy" | "custom";
@@ -1603,48 +1634,96 @@ async function runVideoJob(c: OpenAiContext, job: VideoJobRow, args: {
 }) {
   const startedAt = Date.now();
   try {
-    await updateVideoJob(c.env.DB, job.id, { status: "in_progress", progress: 5 });
+    await updateVideoJob(c.env.DB, job.id, { status: "in_progress", progress: 1 });
+    const settingsBundle = await getSettings(c.env);
+    const chosen = await selectBestToken(c.env.DB, job.model);
+    if (!chosen) throw new Error("No available token");
+    const cookie = buildCookie(chosen.token, settingsBundle.grok);
     const videoConfig = resolveVideoSize(job.size);
-    const messages = [
-      {
-        role: "user",
-        content: args.inputReferences.length
-          ? [
-              { type: "text", text: job.prompt },
-              ...args.inputReferences.map((url) => ({ type: "image_url", image_url: { url } })),
-            ]
-          : job.prompt,
-      },
-    ];
-    const req = new Request(`${args.origin}/v1/chat/completions`, {
-      method: "POST",
-      headers: c.req.raw.headers,
-      body: JSON.stringify({
-        model: job.model,
-        messages,
-        stream: false,
-        video_config: {
-          aspect_ratio: videoConfig.aspectRatio,
-          video_length: Number(job.seconds),
-          resolution_name: args.resolutionName,
-          preset: args.preset,
-        },
-      }),
-    });
-    const resp = await openAiRoutes.fetch(req, c.env, c.executionCtx);
-    const payload = await resp.json().catch(() => null);
-    if (!resp.ok) {
-      const message = payload && typeof payload === "object"
-        ? String((payload as any)?.error?.message ?? resp.statusText)
-        : resp.statusText;
-      throw new Error(message);
+    const segments = buildVideoSegmentLengths(Number(job.seconds));
+    let parentPostId = "";
+    let extendPostId = "";
+    let elapsedSeconds = 0;
+    let finalArtifact: VideoArtifactInfo | null = null;
+    let videoImageReferences: string[] = [];
+
+    if (args.inputReferences.length) {
+      const uploaded = await uploadImage(args.inputReferences[0]!, cookie, settingsBundle.grok);
+      const mediaUrl = assetUrlFromFileUri(uploaded.fileUri);
+      videoImageReferences = mediaUrl ? [mediaUrl] : [];
+      const post = await createMediaPost(
+        { mediaType: "MEDIA_POST_TYPE_IMAGE", mediaUrl },
+        cookie,
+        settingsBundle.grok,
+      );
+      parentPostId = post.postId;
+    } else {
+      const post = await createMediaPost(
+        { mediaType: "MEDIA_POST_TYPE_VIDEO", prompt: job.prompt },
+        cookie,
+        settingsBundle.grok,
+      );
+      parentPostId = post.postId;
     }
-    const contentUrl = extractVideoUrlFromChatCompletion(payload);
-    if (!contentUrl) throw new Error("Video generation returned no content URL");
+
+    if (!parentPostId) throw new Error("Video create-post returned no post id");
+
+    for (let index = 0; index < segments.length; index++) {
+      const segmentLength = segments[index]!;
+      let payload: Record<string, unknown>;
+      let referer = "https://grok.com/imagine";
+      if (index === 0) {
+        const built = buildConversationPayload({
+          requestModel: job.model,
+          content: job.prompt,
+          imgIds: [],
+          imgUris: [],
+          postId: parentPostId,
+          ...(videoImageReferences.length ? { videoImageReferences } : {}),
+          videoConfig: {
+            aspect_ratio: videoConfig.aspectRatio,
+            video_length: segmentLength,
+            resolution_name: args.resolutionName,
+            preset: args.preset,
+          },
+          settings: settingsBundle.grok,
+        });
+        payload = built.payload;
+        referer = built.referer ?? referer;
+      } else {
+        payload = buildVideoExtendPayload({
+          prompt: job.prompt,
+          parentPostId,
+          extendPostId,
+          aspectRatio: videoConfig.aspectRatio,
+          resolutionName: args.resolutionName,
+          videoLength: segmentLength,
+          preset: args.preset,
+          startTimeSeconds: videoExtendStartTime(elapsedSeconds),
+        });
+        referer = `https://grok.com/imagine/post/${parentPostId}`;
+      }
+
+      finalArtifact = await runVideoSegmentCall({
+        payload,
+        cookie,
+        settings: settingsBundle.grok,
+        referer,
+      });
+      extendPostId = finalArtifact.videoPostId || finalArtifact.assetId || parentPostId;
+      elapsedSeconds += segmentLength;
+      await updateVideoJob(c.env.DB, job.id, {
+        status: "in_progress",
+        progress: Math.max(1, Math.min(99, Math.floor(((index + 1) / segments.length) * 100))),
+      });
+    }
+
+    if (!finalArtifact?.videoUrl) throw new Error("Video generation returned no content URL");
+    const contentUrl = toOpenAiVideoProxyUrl(args.origin, settingsBundle, finalArtifact.videoUrl);
     await updateVideoJob(c.env.DB, job.id, {
       status: "completed",
       progress: 100,
-      video_url: contentUrl,
+      video_url: finalArtifact.videoUrl,
       content_url: contentUrl,
     });
     await addRequestLog(c.env.DB, {
@@ -1653,7 +1732,7 @@ async function runVideoJob(c: OpenAiContext, job: VideoJobRow, args: {
       duration: Number(((Date.now() - startedAt) / 1000).toFixed(2)),
       status: 200,
       key_name: args.keyName,
-      token_suffix: "",
+      token_suffix: getTokenSuffix(chosen.token),
       error: "",
     });
   } catch (error) {

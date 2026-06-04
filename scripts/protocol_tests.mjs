@@ -136,7 +136,51 @@ try {
   assert.deepEqual(videoApi.resolveVideoSize("1280x720"), { aspectRatio: "16:9", resolutionName: "720p" });
   assert.deepEqual(videoApi.resolveVideoSize("1024x1024"), { aspectRatio: "1:1", resolutionName: "720p" });
   assert.equal(videoApi.resolveVideoSeconds("20"), 20);
+  assert.deepEqual(videoApi.buildVideoSegmentLengths(6), [6]);
+  assert.deepEqual(videoApi.buildVideoSegmentLengths(10), [10]);
+  assert.deepEqual(videoApi.buildVideoSegmentLengths(12), [6, 6]);
+  assert.deepEqual(videoApi.buildVideoSegmentLengths(16), [10, 6]);
+  assert.deepEqual(videoApi.buildVideoSegmentLengths(20), [10, 10]);
+  assert.equal(videoApi.videoExtendStartTime(10), 10.041667);
+  const extendPayload = videoApi.buildVideoExtendPayload({
+    prompt: "extend city",
+    parentPostId: "parent_post",
+    extendPostId: "segment_post",
+    aspectRatio: "16:9",
+    resolutionName: "720p",
+    videoLength: 6,
+    preset: "normal",
+    startTimeSeconds: videoApi.videoExtendStartTime(10),
+  });
+  const extendConfig =
+    extendPayload.responseMetadata?.modelConfigOverride?.modelMap?.videoGenModelConfig;
+  assert.equal(extendPayload.modelName, "imagine-video-gen");
+  assert.equal(extendPayload.message, "extend city --mode=normal");
+  assert.equal(extendConfig.isVideoExtension, true);
+  assert.equal(extendConfig.extendPostId, "segment_post");
+  assert.equal(extendConfig.parentPostId, "parent_post");
+  assert.equal(extendConfig.videoLength, 6);
+  assert.equal(extendConfig.videoExtensionStartTime, 10.041667);
   assert.throws(() => videoApi.resolveVideoSeconds(8), /seconds must be one of/);
+  assert.equal(
+    videoApi.extractVideoArtifactFromNdjson(
+      [
+        JSON.stringify({
+          result: {
+            response: {
+              streamingVideoGenerationResponse: {
+                progress: 100,
+                videoUrl: "/users/demo/videos/final.mp4",
+                videoPostId: "post_final",
+              },
+            },
+          },
+        }),
+      ].join("\n"),
+      "",
+    ).videoPostId,
+    "post_final",
+  );
   assert.equal(videoApi.normalizeVideoPreset("spicy"), "spicy");
   assert.equal(videoApi.normalizeVideoPreset("unknown"), "custom");
 
@@ -158,6 +202,32 @@ try {
       choices: [{ message: { content: '<a href="https://grok2api.example/images/u_def">video</a>' } }],
     }),
     "https://grok2api.example/images/u_def",
+  );
+  assert.equal(
+    videoApi.extractResponseVideoArtifact(
+      {
+        streamingVideoGenerationResponse: {
+          progress: 100,
+          videoUrl: "/users/demo/videos/final.mp4",
+          thumbnailImageUrl: "/users/demo/videos/final.jpg",
+          videoPostId: "post_1",
+          assetId: "asset_video",
+        },
+      },
+      "sso=demo; x-userid=user_abc",
+    ).videoUrl,
+    "https://assets.grok.com/users/demo/videos/final.mp4",
+  );
+  assert.equal(
+    videoApi.extractResponseVideoArtifact(
+      {
+        modelResponse: {
+          fileAttachments: ["asset_video"],
+        },
+      },
+      "sso=demo; x-userid=user_abc",
+    ).videoUrl,
+    "https://assets.grok.com/users/user_abc/asset_video/content",
   );
 
   const resetPayload = imagine.buildImagineWsResetPayload();

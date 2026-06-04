@@ -1,5 +1,6 @@
 import type { GrokSettings, GlobalSettings } from "../settings";
 import { extractResponseImageUrls } from "./imageCards";
+import { extractResponseVideoArtifact } from "./video";
 import type { ParsedToolCall } from "./tooling";
 import { ToolSieve, parseToolCalls } from "./tooling";
 
@@ -290,8 +291,7 @@ export function createOpenAiStreamFromGrokNdjson(
             const videoResp = grok.streamingVideoGenerationResponse;
             if (videoResp) {
               const progress = typeof videoResp.progress === "number" ? videoResp.progress : 0;
-              const videoUrl = typeof videoResp.videoUrl === "string" ? videoResp.videoUrl : "";
-              const thumbUrl = typeof videoResp.thumbnailImageUrl === "string" ? videoResp.thumbnailImageUrl : "";
+              const videoArtifact = extractResponseVideoArtifact(grok, opts.cookie);
 
               if (progress > lastVideoProgress) {
                 lastVideoProgress = progress;
@@ -309,13 +309,13 @@ export function createOpenAiStreamFromGrokNdjson(
                 }
               }
 
-              if (videoUrl) {
-                const videoPath = encodeAssetPath(videoUrl);
+              if (videoArtifact.videoUrl) {
+                const videoPath = encodeAssetPath(videoArtifact.videoUrl);
                 const src = toImgProxyUrl(global, origin, videoPath);
 
                 let poster: string | undefined;
-                if (thumbUrl) {
-                  const thumbPath = encodeAssetPath(thumbUrl);
+                if (videoArtifact.thumbnailUrl) {
+                  const thumbPath = encodeAssetPath(videoArtifact.thumbnailUrl);
                   poster = toImgProxyUrl(global, origin, thumbPath);
                 }
 
@@ -504,13 +504,14 @@ export async function parseOpenAiFromGrokNdjson(
     if (!grok) continue;
 
     const videoResp = grok.streamingVideoGenerationResponse;
-    if (videoResp?.videoUrl && typeof videoResp.videoUrl === "string") {
-      const videoPath = encodeAssetPath(videoResp.videoUrl);
+    const videoArtifact = extractResponseVideoArtifact(grok, opts.cookie);
+    if ((videoResp || requestedModel.includes("video")) && videoArtifact.videoUrl) {
+      const videoPath = encodeAssetPath(videoArtifact.videoUrl);
       const src = toImgProxyUrl(global, origin, videoPath);
 
       let poster: string | undefined;
-      if (typeof videoResp.thumbnailImageUrl === "string" && videoResp.thumbnailImageUrl) {
-        const thumbPath = encodeAssetPath(videoResp.thumbnailImageUrl);
+      if (videoArtifact.thumbnailUrl) {
+        const thumbPath = encodeAssetPath(videoArtifact.thumbnailUrl);
         poster = toImgProxyUrl(global, origin, thumbPath);
       }
 
