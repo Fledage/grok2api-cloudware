@@ -29,6 +29,7 @@ import {
   listTokens,
   recordTokenFailure,
   selectBestToken,
+  setTokensDisabled,
   tokenRowToInfo,
   updateTokenNote,
   updateTokenTags,
@@ -608,7 +609,7 @@ adminRoutes.get("/api/v1/admin/tokens", requireAdminAuth, async (c) => {
     for (const r of rows) {
       const pool = toPoolName(r.token_type);
       const isCooling = Boolean(r.cooldown_until && r.cooldown_until > now);
-      const status = r.status === "expired" ? "invalid" : isCooling ? "cooling" : "active";
+      const status = r.status === "expired" ? "invalid" : r.status === "disabled" ? "disabled" : isCooling ? "cooling" : "active";
       const quotaKnown = Number.isFinite(r.remaining_queries) && r.remaining_queries >= 0;
       const quota = quotaKnown ? r.remaining_queries : -1;
       const heavyQuotaKnown =
@@ -672,7 +673,7 @@ adminRoutes.post("/api/v1/admin/tokens", requireAdminAuth, async (c) => {
         const heavyQuota = Number.isFinite(heavyQuotaRaw) && heavyQuotaRaw >= 0 ? Math.floor(heavyQuotaRaw) : -1;
         const note = typeof it === "string" ? "" : String((it as any)?.note ?? "");
 
-        const status = statusRaw === "invalid" ? "expired" : "active";
+        const status = statusRaw === "invalid" ? "expired" : statusRaw === "disabled" ? "disabled" : "active";
         const cooldownUntil = statusRaw === "cooling" ? now + 60 * 60 * 1000 : null;
 
         const remaining = quota >= 0 ? quota : -1;
@@ -759,6 +760,19 @@ adminRoutes.post("/api/v1/admin/tokens/refresh", requireAdminAuth, async (c) => 
     return c.json(legacyOk({ results }));
   } catch (e) {
     return c.json(legacyErr(`Refresh failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
+});
+
+adminRoutes.post("/api/v1/admin/tokens/disabled", requireAdminAuth, async (c) => {
+  try {
+    const body = (await c.req.json()) as { token?: string; tokens?: string[]; disabled?: boolean };
+    const tokens: string[] = [];
+    if (typeof body?.token === "string") tokens.push(body.token);
+    if (Array.isArray(body?.tokens)) tokens.push(...body.tokens.filter((item): item is string => typeof item === "string"));
+    const changed = await setTokensDisabled(c.env.DB, tokens, Boolean(body?.disabled));
+    return c.json(legacyOk({ result: { changed, disabled: Boolean(body?.disabled) } }));
+  } catch (e) {
+    return c.json(legacyErr(`Update token disabled failed: ${e instanceof Error ? e.message : String(e)}`), 500);
   }
 });
 
@@ -991,6 +1005,19 @@ adminRoutes.post("/api/tokens/delete", requireAdminAuth, async (c) => {
   }
 });
 
+adminRoutes.post("/api/tokens/disabled", requireAdminAuth, async (c) => {
+  try {
+    const body = (await c.req.json()) as { token?: string; tokens?: string[]; disabled?: boolean };
+    const tokens: string[] = [];
+    if (typeof body?.token === "string") tokens.push(body.token);
+    if (Array.isArray(body?.tokens)) tokens.push(...body.tokens.filter((item): item is string => typeof item === "string"));
+    const changed = await setTokensDisabled(c.env.DB, tokens, Boolean(body?.disabled));
+    return c.json({ success: true, message: `状态更新成功(${changed})`, data: { changed, disabled: Boolean(body?.disabled) } });
+  } catch (e) {
+    return c.json(jsonError(`更新失败: ${e instanceof Error ? e.message : String(e)}`, "TOKENS_DISABLED_ERROR"), 500);
+  }
+});
+
 adminRoutes.post("/api/tokens/tags", requireAdminAuth, async (c) => {
   try {
     const body = (await c.req.json()) as { token?: string; token_type?: string; tags?: string[] };
@@ -1175,6 +1202,7 @@ adminRoutes.get("/api/stats", requireAdminAuth, async (c) => {
       const tokens = rows.filter((r) => r.token_type === type);
       const total = tokens.length;
       const expired = tokens.filter((t) => t.status === "expired").length;
+      const disabled = tokens.filter((t) => t.status === "disabled").length;
       let cooldown = 0;
       let exhausted = 0;
       let unused = 0;
@@ -1182,6 +1210,7 @@ adminRoutes.get("/api/stats", requireAdminAuth, async (c) => {
 
       for (const t of tokens) {
         if (t.status === "expired") continue;
+        if (t.status === "disabled") continue;
         if (t.cooldown_until && t.cooldown_until > now) {
           cooldown += 1;
           continue;
@@ -1201,7 +1230,7 @@ adminRoutes.get("/api/stats", requireAdminAuth, async (c) => {
         active += 1;
       }
 
-      return { total, expired, active, cooldown, exhausted, unused };
+      return { total, expired, disabled, active, cooldown, exhausted, unused };
     };
 
     const normal = calc("sso");

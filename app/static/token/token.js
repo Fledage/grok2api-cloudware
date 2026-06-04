@@ -186,6 +186,14 @@ function isTokenInvalid(item) {
   return ['invalid', 'expired', 'disabled'].includes(String(item.status || '').toLowerCase());
 }
 
+function tokenStatusLabel(item) {
+  const status = String(item.status || '').toLowerCase();
+  if (isTokenActive(item)) return 'active';
+  if (status === 'disabled') return 'disabled';
+  if (isTokenExhausted(item)) return 'exhausted';
+  return 'invalid';
+}
+
 function isTokenExhausted(item) {
   const status = String(item.status || '').toLowerCase();
   if (status === 'cooling') return true;
@@ -522,10 +530,11 @@ function renderTable() {
     const tdStatus = document.createElement('td');
     let statusClass = 'badge-gray';
     if (isTokenActive(item)) statusClass = 'badge-green';
+    else if (String(item.status || '').toLowerCase() === 'disabled') statusClass = 'badge-gray';
     else if (isTokenExhausted(item)) statusClass = 'badge-orange';
     else statusClass = 'badge-red';
     tdStatus.className = 'text-center';
-    tdStatus.innerHTML = `<span class="badge ${statusClass}">${isTokenActive(item) ? 'active' : (isTokenExhausted(item) ? 'exhausted' : 'invalid')}</span>`;
+    tdStatus.innerHTML = `<span class="badge ${statusClass}">${tokenStatusLabel(item)}</span>`;
 
     // Quota (Center)
     const tdQuota = document.createElement('td');
@@ -1137,6 +1146,44 @@ async function processBatchQueue() {
   }, 400);
 }
 
+async function processDisabledQueue() {
+  if (!isBatchProcessing || isBatchPaused || (currentBatchAction !== 'disable' && currentBatchAction !== 'enable')) return;
+
+  if (batchQueue.length === 0) {
+    finishBatchProcess();
+    return;
+  }
+
+  const chunk = batchQueue.splice(0, BATCH_SIZE);
+  const disabled = currentBatchAction === 'disable';
+
+  try {
+    const res = await fetch('/api/v1/admin/tokens/disabled', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...buildAuthHeaders(apiKey)
+      },
+      body: JSON.stringify({ tokens: chunk, disabled })
+    });
+
+    if (!res.ok) {
+      const payload = await parseJsonSafely(res);
+      showToast(`部分状态更新失败: ${extractApiErrorMessage(payload, '请求失败')}`, 'error');
+    }
+    batchProcessed += chunk.length;
+  } catch (e) {
+    showToast('网络请求错误', 'error');
+    batchProcessed += chunk.length;
+  }
+
+  updateBatchProgress();
+  if (!isBatchProcessing || isBatchPaused) return;
+  setTimeout(() => {
+    processDisabledQueue();
+  }, 400);
+}
+
 function toggleBatchPause() {
   if (!isBatchProcessing) return;
   isBatchPaused = !isBatchPaused;
@@ -1146,6 +1193,8 @@ function toggleBatchPause() {
       processBatchQueue();
     } else if (currentBatchAction === 'delete') {
       processDeleteQueue();
+    } else if (currentBatchAction === 'disable' || currentBatchAction === 'enable') {
+      processDisabledQueue();
     }
   }
 }
@@ -1168,14 +1217,31 @@ function finishBatchProcess(aborted = false) {
   loadData(); // Final data refresh
 
   if (aborted) {
-    showToast(action === 'delete' ? '已终止删除' : '已终止刷新', 'info');
+    showToast(batchActionMessage(action, true), 'info');
   } else {
-    showToast(action === 'delete' ? '删除完成' : '刷新完成', 'success');
+    showToast(batchActionMessage(action, false), 'success');
   }
+}
+
+function batchActionMessage(action, aborted) {
+  const prefix = aborted ? '已终止' : '';
+  const suffix = aborted ? '' : '完成';
+  if (action === 'delete') return `${prefix}删除${suffix}`;
+  if (action === 'disable') return `${prefix}禁用${suffix}`;
+  if (action === 'enable') return `${prefix}恢复${suffix}`;
+  return `${prefix}刷新${suffix}`;
 }
 
 async function batchUpdate() {
   startBatchRefresh();
+}
+
+async function batchDisable() {
+  startBatchDisabled(true);
+}
+
+async function batchEnable() {
+  startBatchDisabled(false);
 }
 
 function updateBatchProgress() {
@@ -1205,10 +1271,37 @@ function setActionButtonsState() {
   const disabled = isBatchProcessing;
   const exportBtn = document.getElementById('btn-batch-export');
   const updateBtn = document.getElementById('btn-batch-update');
+  const disableBtn = document.getElementById('btn-batch-disable');
+  const enableBtn = document.getElementById('btn-batch-enable');
   const deleteBtn = document.getElementById('btn-batch-delete');
   if (exportBtn) exportBtn.disabled = disabled || selectedCount === 0;
   if (updateBtn) updateBtn.disabled = disabled || selectedCount === 0;
+  if (disableBtn) disableBtn.disabled = disabled || selectedCount === 0;
+  if (enableBtn) enableBtn.disabled = disabled || selectedCount === 0;
   if (deleteBtn) deleteBtn.disabled = disabled || selectedCount === 0;
+}
+
+async function startBatchDisabled(disabled) {
+  if (isBatchProcessing) {
+    showToast('当前有任务进行中', 'info');
+    return;
+  }
+  const selected = flatTokens.filter(t => t._selected);
+  if (selected.length === 0) return showToast('未选择 Token', 'error');
+  const actionText = disabled ? '禁用' : '恢复';
+  const ok = await confirmAction(`确定要${actionText}选中的 ${selected.length} 个 Token 吗？`, { okText: actionText });
+  if (!ok) return;
+
+  isBatchProcessing = true;
+  isBatchPaused = false;
+  currentBatchAction = disabled ? 'disable' : 'enable';
+  batchQueue = selected.map(t => normalizeSsoToken(t.token));
+  batchTotal = batchQueue.length;
+  batchProcessed = 0;
+
+  updateBatchProgress();
+  setActionButtonsState();
+  processDisabledQueue();
 }
 
 async function startBatchDelete() {

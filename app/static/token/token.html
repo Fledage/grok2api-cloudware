@@ -10,7 +10,7 @@
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
   <link href="/static/common/common.css?v=3" rel="stylesheet">
-  <link href="/static/token/token.css?v=13" rel="stylesheet">
+  <link href="/static/token/token.css?v=14" rel="stylesheet">
   <link href="/static/common/toast.css" rel="stylesheet">
 </head>
 
@@ -187,6 +187,14 @@
       <button id="btn-batch-update" onclick="batchUpdate()"
         class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100 justify-center">
         刷新
+      </button>
+      <button id="btn-batch-disable" onclick="batchDisable()"
+        class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100 justify-center">
+        禁用
+      </button>
+      <button id="btn-batch-enable" onclick="batchEnable()"
+        class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100 justify-center">
+        恢复
       </button>
       <button id="btn-batch-delete" onclick="batchDelete()" class="geist-button-danger text-xs px-3">
         删除
@@ -370,7 +378,7 @@
   <script src="/static/common/header.js?v=4"></script>
   <script src="/static/common/footer.js?v=1"></script>
   <script src="/static/common/toast.js"></script>
-  <script src="/static/token/token.js?v=16"></script>
+  <script src="/static/token/token.js?v=17"></script>
 </body>
 
 </html>

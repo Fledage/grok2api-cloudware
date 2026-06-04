@@ -11,14 +11,21 @@ const context = {
     return 0;
   },
   clearInterval() {},
-  setTimeout(fn) {
-    if (typeof fn === "function") fn();
+  setTimeout() {
     return 0;
   },
   requestAnimationFrame(fn) {
     if (typeof fn === "function") fn();
   },
-  fetch: async () => ({ ok: false, status: 404, text: async () => "", json: async () => ({}) }),
+  fetch: async (url, options = {}) => {
+    context.__fetches.push({ url, options });
+    return { ok: true, status: 200, text: async () => "", json: async () => ({}) };
+  },
+  __fetches: [],
+  buildAuthHeaders() {
+    return {};
+  },
+  showToast() {},
   window: {
     URL: {
       createObjectURL() {
@@ -79,7 +86,24 @@ const tests = `
   assert.deepEqual(exported.ssoBasic.map((item) => item.token), ["basic-json"]);
   assert.deepEqual(exported.ssoSuper.map((item) => item.token), ["super-json"]);
   assert.equal(exported.ssoSuper[0].quota, -1);
+
+  assert.equal(tokenStatusLabel({ status: "disabled", quota_known: false }), "disabled");
+  assert.equal(isTokenActive({ status: "disabled", quota_known: false }), false);
+
+  apiKey = "test-admin-key";
+  batchQueue = ["basic-json", "super-json"];
+  batchTotal = 2;
+  batchProcessed = 0;
+  isBatchProcessing = true;
+  isBatchPaused = false;
+  currentBatchAction = "disable";
+  return processDisabledQueue().then(() => {
+    assert.equal(batchProcessed, 2);
+    const req = __fetches.find((item) => String(item.url).includes("/tokens/disabled"));
+    assert.ok(req);
+    assert.deepEqual(JSON.parse(req.options.body), { tokens: ["basic-json", "super-json"], disabled: true });
+  });
 })();
 `;
 
-vm.runInNewContext(`${source}\n${tests}`, context);
+await vm.runInNewContext(`${source}\n${tests}`, context);

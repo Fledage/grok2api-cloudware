@@ -31,6 +31,11 @@ function parseTags(tagsJson: string): string[] {
   }
 }
 
+function normalizeSsoToken(raw: string): string {
+  const token = String(raw || "").trim();
+  return token.startsWith("sso=") ? token.slice(4).trim() : token;
+}
+
 export function tokenRowToInfo(row: TokenRow): {
   token: string;
   token_type: TokenType;
@@ -52,6 +57,8 @@ export function tokenRowToInfo(row: TokenRow): {
   const cooldown_remaining = cooldownRemainingMs ? Math.floor((cooldownRemainingMs + 999) / 1000) : 0;
   const limit_reason = cooldownRemainingMs
     ? "cooldown"
+    : row.status === "disabled"
+      ? "disabled"
     : row.token_type === "ssoSuper"
       ? row.remaining_queries === 0 || row.heavy_remaining_queries === 0
         ? "exhausted"
@@ -61,6 +68,7 @@ export function tokenRowToInfo(row: TokenRow): {
         : "";
 
   const status = (() => {
+    if (row.status === "disabled") return "禁用";
     if (row.status === "expired") return "失效";
     if (cooldownRemainingMs) return "冷却中";
     if (row.token_type === "ssoSuper") {
@@ -157,7 +165,7 @@ export async function selectBestToken(db: Env["DB"], model: string): Promise<{ t
       db,
       `SELECT token FROM tokens
        WHERE token_type = ?
-         AND status != 'expired'
+         AND status = 'active'
          AND failed_count < ?
          AND (cooldown_until IS NULL OR cooldown_until <= ?)
          AND ${field} != 0
@@ -178,7 +186,7 @@ export async function selectBestToken(db: Env["DB"], model: string): Promise<{ t
 export async function getAvailableTokenPools(db: Env["DB"]): Promise<AvailableTokenPools> {
   const now = nowMs();
   const baseWhere = `
-    status != 'expired'
+    status = 'active'
     AND failed_count < ?
     AND (cooldown_until IS NULL OR cooldown_until <= ?)
   `;
@@ -211,6 +219,30 @@ export async function getAvailableTokenPools(db: Env["DB"]): Promise<AvailableTo
     super: (superPool?.c ?? 0) > 0,
     heavy: (heavy?.c ?? 0) > 0,
   };
+}
+
+export async function setTokensDisabled(db: Env["DB"], tokens: string[], disabled: boolean): Promise<number> {
+  const cleaned = [...new Set(tokens.map(normalizeSsoToken).filter(Boolean))];
+  if (!cleaned.length) return 0;
+  const placeholders = cleaned.map(() => "?").join(",");
+  const result = disabled
+    ? await db
+        .prepare(`UPDATE tokens SET status = ?, cooldown_until = NULL WHERE token IN (${placeholders})`)
+        .bind("disabled", ...cleaned)
+        .run()
+    : await db
+        .prepare(
+          `UPDATE tokens
+           SET status = 'active',
+               failed_count = 0,
+               cooldown_until = NULL,
+               last_failure_time = NULL,
+               last_failure_reason = NULL
+           WHERE token IN (${placeholders})`,
+        )
+        .bind(...cleaned)
+        .run();
+  return Number((result as { meta?: { changes?: number } }).meta?.changes ?? 0);
 }
 
 export async function recordTokenFailure(
