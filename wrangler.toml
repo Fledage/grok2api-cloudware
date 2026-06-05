@@ -2,8 +2,27 @@ name = "grok2api"
 main = "src/index.ts"
 compatibility_date = "2026-01-28"
 
-# Static assets (admin UI)
-assets = { directory = "./app/static", binding = "ASSETS" }
+# Static assets (admin UI). Dynamic UI/API routes must run the Worker first so
+# version redirects, legacy-route redirects, and server-inlined headers apply.
+[assets]
+directory = "./app/static"
+binding = "ASSETS"
+run_worker_first = [
+  "/",
+  "/admin*",
+  "/chat",
+  "/login",
+  "/manage",
+  "/token*",
+  "/config*",
+  "/cache*",
+  "/webui*",
+  "/meta*",
+  "/health",
+  "/v1*",
+  "/images*",
+  "!/static/*"
+]
 
 # Hard-pin execution closer to the US to make egress locality more stable.
 # Docs: https://developers.cloudflare.com/workers/platform/placement/
