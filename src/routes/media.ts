@@ -141,6 +141,28 @@ function toUpstreamHeaders(args: { pathname: string; cookie: string; settings: A
   return headers;
 }
 
+function publicUpstreamHeaders(pathname: string): Record<string, string> {
+  const lower = pathname.toLowerCase();
+  const accept =
+    lower.endsWith(".mp4") || lower.endsWith(".webm") || lower.endsWith(".mov")
+      ? "video/webm,video/mp4,video/*,*/*;q=0.8"
+      : "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8";
+  return {
+    Accept: accept,
+    Referer: "https://grok.com/",
+    "User-Agent":
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+  };
+}
+
+async function fetchPublicUpstream(url: URL, originalPath: string, rangeHeader: string | undefined): Promise<Response | null> {
+  const headers = publicUpstreamHeaders(originalPath);
+  if (rangeHeader) headers.Range = rangeHeader;
+  const upstream = await fetch(url.toString(), { headers, redirect: "follow" });
+  if (upstream.status === 401 || upstream.status === 403 || upstream.status === 404) return null;
+  return upstream;
+}
+
 mediaRoutes.get("/images/:imgPath{.+}", async (c) => {
   const imgPath = c.req.param("imgPath");
 
@@ -206,21 +228,30 @@ mediaRoutes.get("/images/:imgPath{.+}", async (c) => {
   // stale metadata cleanup (best-effort)
   c.executionCtx.waitUntil(deleteCacheRow(c.env.DB, key));
 
+  let upstream = upstreamUrl ? await fetchPublicUpstream(url, originalPath, rangeHeader) : null;
+
   const settingsBundle = await getSettings(c.env);
-  const chosen = await selectBestToken(c.env.DB, "grok-4");
-  if (!chosen) return c.text("No available token", 503);
+  let chosenToken = "";
 
-  const cookie = buildSsoCookie(chosen.token, settingsBundle.grok);
+  if (!upstream) {
+    const chosen = await selectBestToken(c.env.DB, "grok-4");
+    if (!chosen) return c.text("No available token", 503);
+    chosenToken = chosen.token;
 
-  const baseHeaders = toUpstreamHeaders({ pathname: originalPath, cookie, settings: settingsBundle.grok });
+    const cookie = buildSsoCookie(chosen.token, settingsBundle.grok);
 
-  // Range requests: KV can't stream partial content efficiently; proxy from upstream.
-  // (If the object is cached and within KV limits, we do support Range by slicing bytes above.)
-  const upstream = await fetch(url.toString(), { headers: rangeHeader ? { ...baseHeaders, Range: rangeHeader } : baseHeaders });
+    const baseHeaders = toUpstreamHeaders({ pathname: originalPath, cookie, settings: settingsBundle.grok });
+
+    // Range requests: KV can't stream partial content efficiently; proxy from upstream.
+    // (If the object is cached and within KV limits, we do support Range by slicing bytes above.)
+    upstream = await fetch(url.toString(), { headers: rangeHeader ? { ...baseHeaders, Range: rangeHeader } : baseHeaders });
+  }
   if (!upstream.ok || !upstream.body) {
     const txt = await upstream.text().catch(() => "");
-    await recordTokenFailure(c.env.DB, chosen.token, upstream.status, txt.slice(0, 200));
-    await applyCooldown(c.env.DB, chosen.token, upstream.status);
+    if (chosenToken) {
+      await recordTokenFailure(c.env.DB, chosenToken, upstream.status, txt.slice(0, 200));
+      await applyCooldown(c.env.DB, chosenToken, upstream.status);
+    }
     return new Response(`Upstream ${upstream.status}`, { status: upstream.status });
   }
 

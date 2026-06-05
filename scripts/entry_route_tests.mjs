@@ -39,11 +39,36 @@ function patchRelativeImports(dir) {
 }
 
 const env = {
-  DB: {},
-  KV_CACHE: {},
+  DB: {
+    prepare() {
+      return {
+        bind() {
+          return {
+            async first() {
+              return { c: 0 };
+            },
+            async all() {
+              return { results: [] };
+            },
+            async run() {
+              return { meta: { changes: 0 } };
+            },
+          };
+        },
+      };
+    },
+  },
+  KV_CACHE: {
+    async getWithMetadata() {
+      return null;
+    },
+    async put() {},
+  },
   ASSETS: {
     fetch: async () => new Response("asset", { status: 200 }),
   },
+  CACHE_RESET_TZ_OFFSET_MINUTES: "480",
+  KV_CACHE_MAX_BYTES: "26214400",
 };
 
 const ctx = {
@@ -84,6 +109,29 @@ try {
   await assertRedirect("/v1/files/image?id=u_abc", "/images/u_abc");
   await assertRedirect("/v1/files/video?id=p_def", "/images/p_def");
   await assertRedirect("/v1/files/image/u_legacy", "/images/u_legacy");
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), init });
+    return new Response("image-bytes", {
+      status: 200,
+      headers: { "content-type": "image/jpeg", "content-length": "11" },
+    });
+  };
+  try {
+    const fullUrl = "https://assets.grok.com/users/demo/generated/image.jpg";
+    const encoded = btoa(fullUrl).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    const app = await import(pathToFileURL(join(outDir, "src/index.js")));
+    const resp = await app.default.fetch(new Request(`https://worker.example/images/u_${encoded}`), env, ctx);
+    assert.equal(resp.status, 200);
+    assert.equal(await resp.text(), "image-bytes");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, fullUrl);
+    assert.equal(Boolean(calls[0].init.headers?.Cookie), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 } finally {
   rmSync(outDir, { recursive: true, force: true });
 }
