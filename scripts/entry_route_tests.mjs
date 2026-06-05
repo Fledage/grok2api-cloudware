@@ -39,12 +39,18 @@ function patchRelativeImports(dir) {
 }
 
 const env = {
+  tokenRows: [],
   DB: {
-    prepare() {
+    prepare(sql) {
       return {
-        bind() {
+        bind(...params) {
           return {
             async first() {
+              if (sql.includes("SELECT token FROM tokens") && sql.includes("ORDER BY")) {
+                const requestedType = String(params[0] || "");
+                const row = env.tokenRows.find((t) => t.token_type === requestedType && t.status === "active");
+                return row ? { token: row.token } : null;
+              }
               return { c: 0 };
             },
             async all() {
@@ -129,6 +135,38 @@ try {
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, fullUrl);
     assert.equal(Boolean(calls[0].init.headers?.Cookie), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const fallbackCalls = [];
+  env.tokenRows = [
+    {
+      token: "basic_token_1234567890",
+      token_type: "sso",
+      status: "active",
+      remaining_queries: -1,
+      heavy_remaining_queries: -1,
+    },
+  ];
+  globalThis.fetch = async (url, init = {}) => {
+    fallbackCalls.push({ url: String(url), init });
+    if (fallbackCalls.length === 1) return new Response("forbidden", { status: 403 });
+    return new Response("private-image", {
+      status: 200,
+      headers: { "content-type": "image/jpeg", "content-length": "13" },
+    });
+  };
+  try {
+    const fullUrl = "https://assets.grok.com/users/demo/generated/private.jpg";
+    const encoded = btoa(fullUrl).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    const app = await import(pathToFileURL(join(outDir, "src/index.js")));
+    const resp = await app.default.fetch(new Request(`https://worker.example/images/u_${encoded}`), env, ctx);
+    assert.equal(resp.status, 200);
+    assert.equal(await resp.text(), "private-image");
+    assert.equal(fallbackCalls.length, 2);
+    assert.equal(Boolean(fallbackCalls[0].init.headers?.Cookie), false);
+    assert.match(String(fallbackCalls[1].init.headers?.Cookie ?? ""), /sso=basic_token_1234567890/);
   } finally {
     globalThis.fetch = originalFetch;
   }

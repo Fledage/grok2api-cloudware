@@ -155,6 +155,18 @@ function publicUpstreamHeaders(pathname: string): Record<string, string> {
   };
 }
 
+async function selectMediaToken(db: Env["DB"], type: CacheType): Promise<{ token: string } | null> {
+  const candidates =
+    type === "video"
+      ? ["grok-imagine-video", "grok-imagine-image", "grok-imagine-image-lite", "grok-4"]
+      : ["grok-imagine-image-lite", "grok-imagine-image", "grok-4-mini", "grok-4"];
+  for (const model of candidates) {
+    const chosen = await selectBestToken(db, model);
+    if (chosen) return chosen;
+  }
+  return null;
+}
+
 async function fetchPublicUpstream(url: URL, originalPath: string, rangeHeader: string | undefined): Promise<Response | null> {
   const headers = publicUpstreamHeaders(originalPath);
   if (rangeHeader) headers.Range = rangeHeader;
@@ -234,7 +246,7 @@ mediaRoutes.get("/images/:imgPath{.+}", async (c) => {
   let chosenToken = "";
 
   if (!upstream) {
-    const chosen = await selectBestToken(c.env.DB, "grok-4");
+    const chosen = await selectMediaToken(c.env.DB, type);
     if (!chosen) return c.text("No available token", 503);
     chosenToken = chosen.token;
 
