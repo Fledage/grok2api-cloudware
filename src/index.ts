@@ -4,6 +4,8 @@ import { openAiRoutes } from "./routes/openai";
 import { mediaRoutes } from "./routes/media";
 import { adminRoutes } from "./routes/admin";
 import { runKvDailyClear } from "./kv/cleanup";
+import { PROJECT_VERSION, getLatestReleaseInfo } from "./meta";
+import { getSettings } from "./settings";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -118,7 +120,14 @@ app.route("/", adminRoutes);
 
 app.get("/_worker.js", (c) => c.notFound());
 
-app.get("/", (c) => c.redirect("/login", 302));
+app.get("/meta", (c) => c.json({ version: PROJECT_VERSION }));
+
+app.get("/meta/update", async (c) => {
+  const force = String(c.req.query("force") ?? "").trim().toLowerCase();
+  return c.json(await getLatestReleaseInfo(force === "1" || force === "true" || force === "yes" || force === "on"));
+});
+
+app.get("/", (c) => c.redirect("/admin", 302));
 
 app.get("/login", (c) => {
   const buildSha = getBuildSha(c.env as Env);
@@ -135,7 +144,21 @@ app.get("/manage", (c) => {
   return c.redirect(`/admin/token?v=${encodeURIComponent(buildSha)}`, 302);
 });
 
-app.get("/admin", (c) => c.redirect("/login", 302));
+app.get("/admin", (c) => c.redirect("/admin/login", 302));
+
+app.get("/admin/login", (c) => {
+  const buildSha = getBuildSha(c.env as Env);
+  const v = c.req.query("v") ?? "";
+  if (v !== buildSha) return c.redirect(`/admin/login?v=${encodeURIComponent(buildSha)}`, 302);
+  return fetchAsset(c, "/admin/login.html");
+});
+
+app.get("/admin/account", (c) => {
+  const buildSha = getBuildSha(c.env as Env);
+  const v = c.req.query("v") ?? "";
+  if (v !== buildSha) return c.redirect(`/admin/account?v=${encodeURIComponent(buildSha)}`, 302);
+  return fetchAsset(c, "/admin/account.html");
+});
 
 app.get("/admin/token", (c) => {
   const buildSha = getBuildSha(c.env as Env);
@@ -155,14 +178,14 @@ app.get("/admin/config", (c) => {
   const buildSha = getBuildSha(c.env as Env);
   const v = c.req.query("v") ?? "";
   if (v !== buildSha) return c.redirect(`/admin/config?v=${encodeURIComponent(buildSha)}`, 302);
-  return fetchAsset(c, "/config/config.html");
+  return fetchAsset(c, "/admin/config.html");
 });
 
 app.get("/admin/cache", (c) => {
   const buildSha = getBuildSha(c.env as Env);
   const v = c.req.query("v") ?? "";
   if (v !== buildSha) return c.redirect(`/admin/cache?v=${encodeURIComponent(buildSha)}`, 302);
-  return fetchAsset(c, "/cache/cache.html");
+  return fetchAsset(c, "/admin/cache.html");
 });
 
 app.get("/admin/keys", (c) => {
@@ -188,33 +211,22 @@ app.get("/admin/chat", (c) => {
 
 app.get("/webui", (c) => c.redirect("/webui/login", 302));
 
-app.get("/webui/login", (c) => {
+async function fetchWebuiPage(c: any, assetPath: string, routePath: string): Promise<Response> {
+  const settings = await getSettings(c.env as Env);
+  if (!settings.global.webui_enabled) return c.notFound();
   const buildSha = getBuildSha(c.env as Env);
   const v = c.req.query("v") ?? "";
-  if (v !== buildSha) return c.redirect(`/webui/login?v=${encodeURIComponent(buildSha)}`, 302);
-  return fetchAsset(c, "/webui/login.html");
-});
+  if (v !== buildSha) return c.redirect(`${routePath}?v=${encodeURIComponent(buildSha)}`, 302);
+  return fetchAsset(c, assetPath);
+}
 
-app.get("/webui/chat", (c) => {
-  const buildSha = getBuildSha(c.env as Env);
-  const v = c.req.query("v") ?? "";
-  if (v !== buildSha) return c.redirect(`/webui/chat?v=${encodeURIComponent(buildSha)}`, 302);
-  return fetchAsset(c, "/webui/chat.html");
-});
+app.get("/webui/login", (c) => fetchWebuiPage(c, "/webui/login.html", "/webui/login"));
 
-app.get("/webui/masonry", (c) => {
-  const buildSha = getBuildSha(c.env as Env);
-  const v = c.req.query("v") ?? "";
-  if (v !== buildSha) return c.redirect(`/webui/masonry?v=${encodeURIComponent(buildSha)}`, 302);
-  return fetchAsset(c, "/webui/masonry.html");
-});
+app.get("/webui/chat", (c) => fetchWebuiPage(c, "/webui/chat.html", "/webui/chat"));
 
-app.get("/webui/chatkit", (c) => {
-  const buildSha = getBuildSha(c.env as Env);
-  const v = c.req.query("v") ?? "";
-  if (v !== buildSha) return c.redirect(`/webui/chatkit?v=${encodeURIComponent(buildSha)}`, 302);
-  return fetchAsset(c, "/webui/chatkit.html");
-});
+app.get("/webui/masonry", (c) => fetchWebuiPage(c, "/webui/masonry.html", "/webui/masonry"));
+
+app.get("/webui/chatkit", (c) => fetchWebuiPage(c, "/webui/chatkit.html", "/webui/chatkit"));
 
 app.get("/static/*", (c) => {
   const url = new URL(c.req.url);

@@ -24,6 +24,15 @@ function extractApiToken(req: { header(name: string): string | undefined | null 
   return xApiKey || null;
 }
 
+function safeCompare(a: string, b: string): boolean {
+  const left = new TextEncoder().encode(a);
+  const right = new TextEncoder().encode(b);
+  if (left.length !== right.length) return false;
+  let diff = 0;
+  for (let i = 0; i < left.length; i += 1) diff |= (left[i] ?? 0) ^ (right[i] ?? 0);
+  return diff === 0;
+}
+
 function authError(message: string, code: string): Record<string, unknown> {
   return {
     error: {
@@ -72,10 +81,16 @@ export const requireApiAuth: MiddlewareHandler<{ Bindings: Env; Variables: { api
 };
 
 export const requireAdminAuth: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
-  const token = extractApiToken(c.req);
+  const token = extractApiToken(c.req) ?? String(c.req.query("app_key") ?? "").trim();
   if (!token) return c.json({ error: "缺少会话", code: "MISSING_SESSION" }, 401);
-  const ok = await verifyAdminSession(c.env.DB, token);
-  if (!ok) return c.json({ error: "会话已过期", code: "SESSION_EXPIRED" }, 401);
+  const sessionOk = await verifyAdminSession(c.env.DB, token);
+  if (!sessionOk) {
+    const settings = await getSettings(c.env);
+    const adminPassword = String(settings.global.admin_password ?? "").trim();
+    if (!adminPassword || !safeCompare(token, adminPassword)) {
+      return c.json({ error: "会话已过期", code: "SESSION_EXPIRED" }, 401);
+    }
+  }
   return next();
 };
 

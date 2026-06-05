@@ -155,7 +155,10 @@ function parseUpstreamStatusFromMessage(message: string): number {
 
 async function verifyWebuiAccess(c: any, tokenOverride?: string): Promise<boolean> {
   const settings = await getSettings(c.env);
+  if (!settings.global.webui_enabled) return false;
+
   const globalKey = String(settings.grok.api_key ?? "").trim();
+  const webuiKey = String(settings.global.webui_key ?? "").trim();
   const token = String(
     tokenOverride ??
       c.req.query("api_key") ??
@@ -163,6 +166,8 @@ async function verifyWebuiAccess(c: any, tokenOverride?: string): Promise<boolea
       parseBearer(c.req.header("Authorization") ?? null) ??
       "",
   ).trim();
+
+  if (webuiKey) return Boolean(token) && token === webuiKey;
 
   if (token) {
     if (globalKey && token === globalKey) return true;
@@ -625,6 +630,8 @@ adminRoutes.get("/api/v1/admin/config", requireAdminAuth, async (c) => {
         app_url: settings.global.base_url ?? "",
         image_format: settings.global.image_mode ?? "url",
         video_format: "url",
+        webui_enabled: Boolean(settings.global.webui_enabled),
+        webui_key: settings.global.webui_key ?? "",
       },
       grok: {
         temporary: Boolean(settings.grok.temporary),
@@ -691,6 +698,8 @@ adminRoutes.post("/api/v1/admin/config", requireAdminAuth, async (c) => {
       if (typeof appCfg.admin_username === "string") global_config.admin_username = appCfg.admin_username.trim() || "admin";
       if (typeof appCfg.app_key === "string") global_config.admin_password = appCfg.app_key.trim() || "admin";
       if (typeof appCfg.app_url === "string") global_config.base_url = appCfg.app_url.trim();
+      if (typeof appCfg.webui_enabled === "boolean") global_config.webui_enabled = appCfg.webui_enabled;
+      if (typeof appCfg.webui_key === "string") global_config.webui_key = appCfg.webui_key.trim();
       if (appCfg.image_format === "url" || appCfg.image_format === "base64" || appCfg.image_format === "b64_json")
         global_config.image_mode = appCfg.image_format;
     }
@@ -1163,10 +1172,23 @@ adminRoutes.get("/admin/api/status", requireAdminAuth, async (c) => {
   const rows = await listTokens(c.env.DB);
   const manageable = rows.filter(isTokenManageable).length;
   return c.json({
-    status: "success",
+    status: "ok",
     runtime: "cloudflare-workers",
     storage: "d1",
+    size: rows.length,
+    revision: rows.length,
+    selection_strategy: "quota",
     tokens: { total: rows.length, manageable },
+  });
+});
+
+adminRoutes.post("/admin/api/sync", requireAdminAuth, async (c) => {
+  const rows = await listTokens(c.env.DB);
+  return c.json({
+    changed: false,
+    revision: rows.length,
+    runtime: "cloudflare-workers",
+    supported: true,
   });
 });
 

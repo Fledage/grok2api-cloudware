@@ -71,7 +71,7 @@ function makeDb() {
         failed_count: 0,
       },
     ],
-    sessions: new Map([["admin", Date.now() + 60_000]]),
+    sessions: new Map([["session-token", Date.now() + 60_000]]),
     settings: new Map(),
     kvDeletes: [],
   };
@@ -216,6 +216,31 @@ try {
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
+    if (urlText.includes("api.github.com/repos/chenyme/grok2api/releases")) {
+      return new Response(
+        JSON.stringify([
+          { tag_name: "v9.0.0", name: "draft release", draft: true },
+          { tag_name: "not-a-version", name: "invalid release", draft: false },
+          {
+            tag_name: "v2.0.5",
+            name: "v2.0.5",
+            html_url: "https://github.com/chenyme/grok2api/releases/tag/v2.0.5",
+            published_at: "2026-06-05T00:00:00Z",
+            body: "Compatibility release",
+            draft: false,
+          },
+          {
+            tag_name: "v2.0.4.rc4",
+            name: "v2.0.4.rc4",
+            html_url: "https://github.com/chenyme/grok2api/releases/tag/v2.0.4.rc4",
+            published_at: "2026-06-04T00:00:00Z",
+            body: "Current release",
+            draft: false,
+          },
+        ]),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
     if (urlText.includes("/rest/assets-metadata/")) {
       return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
     }
@@ -261,6 +286,11 @@ try {
     const DB = makeDb();
     const knownAssets = new Set([
       "/login/login.html",
+      "/admin/login.html",
+      "/admin/account.html",
+      "/admin/config.html",
+      "/admin/cache.html",
+      "/admin/header.html",
       "/chat/chat.html",
       "/chat/chat_admin.html",
       "/token/token.html",
@@ -278,7 +308,7 @@ try {
         fetch: async (request) => {
           const pathname = new URL(request.url).pathname;
           return knownAssets.has(pathname)
-            ? new Response("asset", { status: 200 })
+            ? new Response(pathname, { status: 200 })
             : new Response("missing", { status: 404 });
         },
       },
@@ -286,7 +316,21 @@ try {
       DB,
     };
     const ctx = { waitUntil(promise) { return promise; } };
-    const adminHeaders = { Authorization: "Bearer admin" };
+    const adminHeaders = { Authorization: "Bearer session-token" };
+
+    const metaResp = await app.default.fetch(new Request("https://worker.example/meta"), env, ctx);
+    assert.equal(metaResp.status, 200);
+    const meta = await metaResp.json();
+    assert.equal(meta.version, "2.0.4.rc4");
+
+    const updateResp = await app.default.fetch(new Request("https://worker.example/meta/update?force=true"), env, ctx);
+    assert.equal(updateResp.status, 200);
+    const update = await updateResp.json();
+    assert.equal(update.current_version, "2.0.4.rc4");
+    assert.equal(update.latest_version, "2.0.5");
+    assert.equal(update.update_available, true);
+    assert.equal(update.status, "ok");
+    assert.equal(fetchCalls.some((call) => call.url.includes("api.github.com/repos/chenyme/grok2api/releases")), true);
 
     const webuiRoot = await app.default.fetch(new Request("https://worker.example/webui"), env, ctx);
     assert.equal(webuiRoot.status, 302);
@@ -298,8 +342,51 @@ try {
     const webuiChatPage = await app.default.fetch(new Request("https://worker.example/webui/chat?v=dev"), env, ctx);
     assert.equal(webuiChatPage.status, 200);
 
+    const adminRoot = await app.default.fetch(new Request("https://worker.example/admin"), env, ctx);
+    assert.equal(adminRoot.status, 302);
+    assert.equal(adminRoot.headers.get("location"), "/admin/login");
+    const adminLogin = await app.default.fetch(new Request("https://worker.example/admin/login"), env, ctx);
+    assert.equal(adminLogin.status, 302);
+    assert.equal(adminLogin.headers.get("location"), "/admin/login?v=dev");
+    const adminLoginPage = await app.default.fetch(new Request("https://worker.example/admin/login?v=dev"), env, ctx);
+    assert.equal(adminLoginPage.status, 200);
+    assert.equal(await adminLoginPage.text(), "/admin/login.html");
+    const adminAccount = await app.default.fetch(new Request("https://worker.example/admin/account"), env, ctx);
+    assert.equal(adminAccount.status, 302);
+    assert.equal(adminAccount.headers.get("location"), "/admin/account?v=dev");
+    const adminAccountPage = await app.default.fetch(new Request("https://worker.example/admin/account?v=dev"), env, ctx);
+    assert.equal(adminAccountPage.status, 200);
+    assert.equal(await adminAccountPage.text(), "/admin/account.html");
+    const adminConfigPage = await app.default.fetch(new Request("https://worker.example/admin/config?v=dev"), env, ctx);
+    assert.equal(adminConfigPage.status, 200);
+    assert.equal(await adminConfigPage.text(), "/admin/config.html");
+    const adminCachePage = await app.default.fetch(new Request("https://worker.example/admin/cache?v=dev"), env, ctx);
+    assert.equal(adminCachePage.status, 200);
+    assert.equal(await adminCachePage.text(), "/admin/cache.html");
+
     const verify = await app.default.fetch(new Request("https://worker.example/webui/api/verify"), env, ctx);
     assert.equal(verify.status, 200);
+
+    const adminVerifyByAppKey = await app.default.fetch(new Request("https://worker.example/admin/api/verify?app_key=admin"), env, ctx);
+    assert.equal(adminVerifyByAppKey.status, 200);
+
+    const adminSyncResp = await app.default.fetch(
+      new Request("https://worker.example/admin/api/sync?app_key=admin", { method: "POST" }),
+      env,
+      ctx,
+    );
+    assert.equal(adminSyncResp.status, 200);
+    const adminSync = await adminSyncResp.json();
+    assert.equal(adminSync.changed, false);
+    assert.equal(typeof adminSync.revision, "number");
+
+    const adminStatusResp = await app.default.fetch(new Request("https://worker.example/admin/api/status?app_key=admin"), env, ctx);
+    assert.equal(adminStatusResp.status, 200);
+    const adminStatus = await adminStatusResp.json();
+    assert.equal(adminStatus.selection_strategy, "quota");
+
+    const batchStreamByAppKey = await app.default.fetch(new Request("https://worker.example/admin/api/batch/task_1/stream?app_key=admin"), env, ctx);
+    assert.equal(batchStreamByAppKey.status, 200);
 
     const modelsResp = await app.default.fetch(new Request("https://worker.example/webui/api/models"), env, ctx);
     assert.equal(modelsResp.status, 200);
@@ -314,18 +401,60 @@ try {
     assert.equal(configBeforeResp.status, 200);
     const configBefore = await configBeforeResp.json();
     assert.equal(configBefore.grok.imagine_public_image_proxy, false);
+    assert.equal(configBefore.app.webui_enabled, true);
+    assert.equal(configBefore.app.webui_key, "");
 
     const configUpdateResp = await app.default.fetch(
       new Request("https://worker.example/api/v1/admin/config", {
         method: "POST",
         headers: { ...adminHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({ grok: { imagine_public_image_proxy: true } }),
+        body: JSON.stringify({ app: { webui_enabled: true, webui_key: "webui-secret" }, grok: { imagine_public_image_proxy: true } }),
       }),
       env,
       ctx,
     );
     assert.equal(configUpdateResp.status, 200);
     assert.equal(JSON.parse(DB.state.settings.get("grok")).imagine_public_image_proxy, true);
+    assert.equal(JSON.parse(DB.state.settings.get("global")).webui_enabled, true);
+    assert.equal(JSON.parse(DB.state.settings.get("global")).webui_key, "webui-secret");
+
+    const webuiVerifyWithoutKey = await app.default.fetch(new Request("https://worker.example/webui/api/verify"), env, ctx);
+    assert.equal(webuiVerifyWithoutKey.status, 401);
+    const webuiVerifyWithKey = await app.default.fetch(
+      new Request("https://worker.example/webui/api/verify", { headers: { Authorization: "Bearer webui-secret" } }),
+      env,
+      ctx,
+    );
+    assert.equal(webuiVerifyWithKey.status, 200);
+
+    const configDisableWebuiResp = await app.default.fetch(
+      new Request("https://worker.example/api/v1/admin/config", {
+        method: "POST",
+        headers: { ...adminHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ app: { webui_enabled: false } }),
+      }),
+      env,
+      ctx,
+    );
+    assert.equal(configDisableWebuiResp.status, 200);
+    const disabledWebuiPage = await app.default.fetch(new Request("https://worker.example/webui/chat?v=dev"), env, ctx);
+    assert.equal(disabledWebuiPage.status, 404);
+    const disabledWebuiApi = await app.default.fetch(
+      new Request("https://worker.example/webui/api/verify", { headers: { Authorization: "Bearer webui-secret" } }),
+      env,
+      ctx,
+    );
+    assert.equal(disabledWebuiApi.status, 401);
+    const configReenableWebuiResp = await app.default.fetch(
+      new Request("https://worker.example/api/v1/admin/config", {
+        method: "POST",
+        headers: { ...adminHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ app: { webui_enabled: true, webui_key: "" } }),
+      }),
+      env,
+      ctx,
+    );
+    assert.equal(configReenableWebuiResp.status, 200);
 
     const disabledResp = await app.default.fetch(
       new Request("https://worker.example/admin/api/tokens/disabled/batch", {

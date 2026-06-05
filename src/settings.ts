@@ -8,6 +8,8 @@ export interface GlobalSettings {
   image_mode?: "url" | "base64" | "b64_json";
   admin_username?: string;
   admin_password?: string;
+  webui_enabled?: boolean;
+  webui_key?: string;
   image_cache_max_size_mb?: number;
   video_cache_max_size_mb?: number;
 }
@@ -72,6 +74,8 @@ const DEFAULTS: SettingsBundle = {
     image_mode: "url",
     admin_username: "admin",
     admin_password: "admin",
+    webui_enabled: true,
+    webui_key: "",
     image_cache_max_size_mb: 512,
     video_cache_max_size_mb: 1024,
   },
