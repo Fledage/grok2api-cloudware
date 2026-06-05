@@ -1,0 +1,347 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const root = new URL("..", import.meta.url);
+const rootPath = fileURLToPath(root);
+const outDir = mkdtempSync(join(tmpdir(), "grok2api-upstream-compat-"));
+
+function walkJsFiles(dir) {
+  const out = [];
+  for (const name of readdirSync(dir)) {
+    const file = join(dir, name);
+    if (statSync(file).isDirectory()) out.push(...walkJsFiles(file));
+    else if (file.endsWith(".js")) out.push(file);
+  }
+  return out;
+}
+
+function patchRelativeImports(dir) {
+  const honoImport = pathToFileURL(join(rootPath, "node_modules/hono/dist/index.js")).href;
+  const honoCorsImport = pathToFileURL(join(rootPath, "node_modules/hono/dist/middleware/cors/index.js")).href;
+  for (const file of walkJsFiles(dir)) {
+    const source = readFileSync(file, "utf8");
+    let patched = source
+      .replace(/(from\s+["'])hono(["'])/g, `$1${honoImport}$2`)
+      .replace(/(from\s+["'])hono\/cors(["'])/g, `$1${honoCorsImport}$2`);
+    patched = patched.replace(/(from\s+["'])(\.\.?\/[^"']+)(["'])/g, (_m, prefix, spec, suffix) => {
+      if (/\.(?:js|json|wasm)$/.test(spec)) return `${prefix}${spec}${suffix}`;
+      return `${prefix}${spec}.js${suffix}`;
+    });
+    if (patched !== source) writeFileSync(file, patched);
+  }
+}
+
+function makeResult(results) {
+  return { results };
+}
+
+function makeDb() {
+  const state = {
+    tokens: [
+      {
+        token: "basic_token_1234567890",
+        token_type: "sso",
+        created_time: 1,
+        remaining_queries: -1,
+        heavy_remaining_queries: -1,
+        status: "active",
+        tags: "[]",
+        note: "",
+        cooldown_until: null,
+        last_failure_time: null,
+        last_failure_reason: null,
+        failed_count: 0,
+      },
+      {
+        token: "super_token_1234567890",
+        token_type: "ssoSuper",
+        created_time: 2,
+        remaining_queries: -1,
+        heavy_remaining_queries: -1,
+        status: "active",
+        tags: "[]",
+        note: "",
+        cooldown_until: null,
+        last_failure_time: null,
+        last_failure_reason: null,
+        failed_count: 0,
+      },
+    ],
+    sessions: new Map([["admin", Date.now() + 60_000]]),
+    settings: new Map(),
+    kvDeletes: [],
+  };
+
+  return {
+    state,
+    prepare(sql) {
+      return {
+        bind(...params) {
+          return {
+            async first() {
+              if (sql.includes("FROM admin_sessions")) {
+                const token = String(params[0] || "");
+                const expires = state.sessions.get(token);
+                return expires ? { token, expires_at: expires } : null;
+              }
+              if (sql.includes("FROM settings WHERE key = ?")) {
+                const value = state.settings.get(String(params[0] || ""));
+                return value ? { value } : null;
+              }
+              if (sql.includes("COUNT(1) as c FROM api_keys")) return { c: 0 };
+              if (sql.includes("COUNT(1) as c FROM tokens") && sql.includes("token_type = 'ssoSuper'") && sql.includes("heavy_remaining_queries")) {
+                return { c: state.tokens.filter((t) => t.token_type === "ssoSuper" && t.status === "active" && t.heavy_remaining_queries !== 0).length };
+              }
+              if (sql.includes("COUNT(1) as c FROM tokens") && sql.includes("token_type = 'ssoSuper'")) {
+                return { c: state.tokens.filter((t) => t.token_type === "ssoSuper" && t.status === "active" && t.remaining_queries !== 0).length };
+              }
+              if (sql.includes("COUNT(1) as c FROM tokens") && sql.includes("token_type = 'sso'")) {
+                return { c: state.tokens.filter((t) => t.token_type === "sso" && t.status === "active" && t.remaining_queries !== 0).length };
+              }
+              if (sql.includes("SELECT token FROM tokens") && sql.includes("ORDER BY")) {
+                const requestedType = String(params[0] || "");
+                const row = state.tokens.find((t) => t.token_type === requestedType && t.status === "active");
+                return row ? { token: row.token } : null;
+              }
+              if (sql.includes("SELECT COUNT(1) as c FROM request_logs")) return { c: 0 };
+              return { c: 0 };
+            },
+            async all() {
+              if (sql.includes("FROM tokens ORDER BY created_time DESC")) return makeResult(state.tokens);
+              if (sql.includes("SELECT token, token_type FROM tokens WHERE token IN")) {
+                const wanted = new Set(params.map((item) => String(item || "")));
+                return makeResult(state.tokens.filter((t) => wanted.has(t.token)).map((t) => ({ token: t.token, token_type: t.token_type })));
+              }
+              if (sql.includes("FROM kv_cache GROUP BY type")) return makeResult([]);
+              if (sql.includes("FROM kv_cache WHERE type = ?")) return makeResult([]);
+              if (sql.includes("FROM request_logs")) return makeResult([]);
+              return makeResult([]);
+            },
+            async run() {
+              if (sql.includes("UPDATE tokens SET status = ?")) {
+                const status = String(params[0] || "");
+                const wanted = new Set(params.slice(1).map((item) => String(item || "")));
+                let changes = 0;
+                for (const row of state.tokens) {
+                  if (!wanted.has(row.token)) continue;
+                  row.status = status;
+                  row.cooldown_until = null;
+                  changes += 1;
+                }
+                return { meta: { changes } };
+              }
+              if (sql.includes("UPDATE tokens") && sql.includes("SET status = 'active'")) {
+                const wanted = new Set(params.map((item) => String(item || "")));
+                let changes = 0;
+                for (const row of state.tokens) {
+                  if (!wanted.has(row.token)) continue;
+                  row.status = "active";
+                  row.failed_count = 0;
+                  row.cooldown_until = null;
+                  changes += 1;
+                }
+                return { meta: { changes } };
+              }
+              if (sql.includes("UPDATE tokens SET remaining_queries")) {
+                const token = String(params.at(-1) || "");
+                const row = state.tokens.find((t) => t.token === token);
+                if (row) {
+                  if (typeof params[0] === "number") row.remaining_queries = params[0];
+                  if (typeof params[1] === "number") row.heavy_remaining_queries = params[1];
+                }
+                return { meta: { changes: row ? 1 : 0 } };
+              }
+              return { meta: { changes: 1 } };
+            },
+          };
+        },
+      };
+    },
+    async batch(stmts) {
+      return Promise.all(stmts.map((stmt) => stmt.run()));
+    },
+  };
+}
+
+try {
+  execFileSync(
+    "npx",
+    [
+      "tsc",
+      "-p",
+      "tsconfig.json",
+      "--outDir",
+      outDir,
+      "--rootDir",
+      ".",
+      "--noEmit",
+      "false",
+      "--declaration",
+      "false",
+      "--sourceMap",
+      "false",
+      "--pretty",
+      "false",
+    ],
+    { cwd: root, stdio: "pipe", shell: process.platform === "win32" },
+  );
+  patchRelativeImports(outDir);
+
+  const fetchCalls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    fetchCalls.push({ url: String(url), init });
+    const urlText = String(url);
+    if (urlText.includes("/rest/livekit/tokens")) {
+      const body = JSON.parse(String(init.body || "{}"));
+      const session = JSON.parse(body.sessionPayload);
+      assert.equal(session.voice, "eve");
+      assert.equal(session.playback_speed, 1.25);
+      assert.equal(session.instructions, "be concise");
+      return new Response(
+        JSON.stringify({
+          token: "livekit-token",
+          livekitUrl: "wss://livekit.grok.com",
+          participantName: "participant-a",
+          roomName: "room-a",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (urlText.includes("/rest/assets-metadata/")) {
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (urlText.includes("/rest/assets")) {
+      return new Response(
+        JSON.stringify({
+          assets: [
+            { id: "asset_1", fileName: "image.png", filePath: "/users/u/asset_1/content", contentType: "image/png", fileSize: 1 },
+            { id: "asset_2", fileName: "video.mp4", filePath: "/users/u/asset_2/content", contentType: "video/mp4", fileSize: 2 },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (urlText.includes("/rest/rate-limits")) {
+      return new Response(JSON.stringify({ remainingQueries: 42, totalQueries: 100 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return originalFetch(url, init);
+  };
+
+  try {
+    const app = await import(pathToFileURL(join(outDir, "src/index.js")));
+    const DB = makeDb();
+    const knownAssets = new Set([
+      "/login/login.html",
+      "/chat/chat.html",
+      "/chat/chat_admin.html",
+      "/token/token.html",
+      "/cache/cache.html",
+      "/config/config.html",
+      "/datacenter/datacenter.html",
+      "/keys/keys.html",
+      "/webui/login.html",
+      "/webui/chat.html",
+      "/webui/masonry.html",
+      "/webui/chatkit.html",
+    ]);
+    const env = {
+      ASSETS: {
+        fetch: async (request) => {
+          const pathname = new URL(request.url).pathname;
+          return knownAssets.has(pathname)
+            ? new Response("asset", { status: 200 })
+            : new Response("missing", { status: 404 });
+        },
+      },
+      KV_CACHE: { delete: async (key) => DB.state.kvDeletes.push(key) },
+      DB,
+    };
+    const ctx = { waitUntil(promise) { return promise; } };
+    const adminHeaders = { Authorization: "Bearer admin" };
+
+    const webuiRoot = await app.default.fetch(new Request("https://worker.example/webui"), env, ctx);
+    assert.equal(webuiRoot.status, 302);
+    assert.equal(webuiRoot.headers.get("location"), "/webui/login");
+
+    const webuiChat = await app.default.fetch(new Request("https://worker.example/webui/chat"), env, ctx);
+    assert.equal(webuiChat.status, 302);
+    assert.equal(webuiChat.headers.get("location"), "/webui/chat?v=dev");
+    const webuiChatPage = await app.default.fetch(new Request("https://worker.example/webui/chat?v=dev"), env, ctx);
+    assert.equal(webuiChatPage.status, 200);
+
+    const verify = await app.default.fetch(new Request("https://worker.example/webui/api/verify"), env, ctx);
+    assert.equal(verify.status, 200);
+
+    const modelsResp = await app.default.fetch(new Request("https://worker.example/webui/api/models"), env, ctx);
+    assert.equal(modelsResp.status, 200);
+    const models = await modelsResp.json();
+    const ids = models.data.map((item) => item.id);
+    assert.ok(ids.includes("grok-imagine-image"));
+    assert.ok(ids.includes("grok-imagine-video"));
+    assert.ok(!ids.includes("definitely-not-a-model"));
+    assert.equal(models.data.find((item) => item.id === "grok-imagine-video").capability, "video");
+
+    const disabledResp = await app.default.fetch(
+      new Request("https://worker.example/admin/api/tokens/disabled/batch", {
+        method: "POST",
+        headers: { ...adminHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ tokens: ["basic_token_1234567890"], disabled: true }),
+      }),
+      env,
+      ctx,
+    );
+    assert.equal(disabledResp.status, 200);
+    const disabled = await disabledResp.json();
+    assert.equal(disabled.status, "success");
+    assert.equal(disabled.summary.ok, 1);
+    assert.equal(DB.state.tokens.find((t) => t.token === "basic_token_1234567890").status, "disabled");
+
+    const voiceResp = await app.default.fetch(
+      new Request("https://worker.example/webui/api/voice/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ voice: "eve", speed: 1.25, instruction: "be concise" }),
+      }),
+      env,
+      ctx,
+    );
+    assert.equal(voiceResp.status, 200);
+    const voice = await voiceResp.json();
+    assert.equal(voice.token, "livekit-token");
+    assert.equal(voice.participant_name, "participant-a");
+    assert.equal(voice.room_name, "room-a");
+
+    const batchClearResp = await app.default.fetch(
+      new Request("https://worker.example/admin/api/batch/cache-clear", {
+        method: "POST",
+        headers: { ...adminHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ tokens: ["super_token_1234567890"] }),
+      }),
+      env,
+      ctx,
+    );
+    assert.equal(batchClearResp.status, 200);
+    const batchClear = await batchClearResp.json();
+    assert.equal(batchClear.status, "success");
+    assert.equal(batchClear.summary.ok, 1);
+    assert.equal(batchClear.results["super_to...34567890"].deleted, 2);
+
+    const assetsResp = await app.default.fetch(new Request("https://worker.example/admin/api/assets", { headers: adminHeaders }), env, ctx);
+    assert.equal(assetsResp.status, 200);
+    const assets = await assetsResp.json();
+    assert.equal(assets.total_assets, 2);
+    assert.equal(assets.tokens[0].assets[0].id, "asset_1");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+} finally {
+  rmSync(outDir, { recursive: true, force: true });
+}

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "../env";
 import { requireAdminAuth } from "../auth";
+import { openAiRoutes } from "./openai";
 import {
   getSettings,
   saveSettings,
@@ -26,10 +27,12 @@ import {
   applyCooldown,
   deleteTokens,
   getAllTags,
+  getAvailableTokenPools,
   listTokens,
   recordTokenFailure,
   selectBestToken,
   setTokensDisabled,
+  type TokenRow,
   tokenRowToInfo,
   updateTokenNote,
   updateTokenTags,
@@ -37,6 +40,7 @@ import {
 } from "../repo/tokens";
 import { generateImagineWs, resolveAspectRatio } from "../grok/imagineExperimental";
 import { deleteAsset, listAssets, type NormalizedAssetItem } from "../grok/assets";
+import { fetchLivekitToken } from "../grok/livekit";
 import { checkRateLimits } from "../grok/rateLimits";
 import { addRequestLog, clearRequestLogs, getRequestLogs, getRequestStats } from "../repo/logs";
 import { getRefreshProgress, setRefreshProgress } from "../repo/refreshProgress";
@@ -50,6 +54,7 @@ import {
 import { dbAll, dbFirst, dbRun } from "../db";
 import { nowMs } from "../utils/time";
 import { listUsageForDay, localDayString } from "../repo/apiKeyUsage";
+import { isModelAvailableForPools, MODEL_CONFIG } from "../grok/models";
 
 function jsonError(message: string, code: string): Record<string, unknown> {
   return { error: message, code };
@@ -139,7 +144,7 @@ function wsSleep(ms: number): Promise<void> {
 }
 
 function parseUpstreamStatusFromMessage(message: string): number {
-  const matched = message.match(/(?:Imagine websocket connect failed:|Upstream)\s*(\d{3})\b/i);
+  const matched = message.match(/(?:Imagine websocket connect failed:|LiveKit token upstream|Upstream)\s*(\d{3})\b/i);
   if (matched) {
     const status = Number(matched[1]);
     if (Number.isFinite(status) && status >= 100 && status <= 599) return status;
@@ -147,10 +152,16 @@ function parseUpstreamStatusFromMessage(message: string): number {
   return 500;
 }
 
-async function verifyWsApiKeyForImagine(c: any): Promise<boolean> {
+async function verifyWebuiAccess(c: any, tokenOverride?: string): Promise<boolean> {
   const settings = await getSettings(c.env);
   const globalKey = String(settings.grok.api_key ?? "").trim();
-  const token = String(c.req.query("api_key") ?? "").trim();
+  const token = String(
+    tokenOverride ??
+      c.req.query("api_key") ??
+      c.req.query("access_token") ??
+      parseBearer(c.req.header("Authorization") ?? null) ??
+      "",
+  ).trim();
 
   if (token) {
     if (globalKey && token === globalKey) return true;
@@ -164,6 +175,10 @@ async function verifyWsApiKeyForImagine(c: any): Promise<boolean> {
     "SELECT COUNT(1) as c FROM api_keys WHERE is_active = 1",
   );
   return (row?.c ?? 0) === 0;
+}
+
+async function verifyWsApiKeyForImagine(c: any): Promise<boolean> {
+  return verifyWebuiAccess(c);
 }
 
 export const adminRoutes = new Hono<{ Bindings: Env }>();
@@ -181,14 +196,65 @@ function legacyErr(message: string): Record<string, unknown> {
   return { status: "error", error: message };
 }
 
+function upstreamCapabilityName(row: { capabilities: string[] }): "chat" | "image" | "image_edit" | "video" {
+  if (row.capabilities.includes("image_edit")) return "image_edit";
+  if (row.capabilities.includes("image")) return "image";
+  if (row.capabilities.includes("video")) return "video";
+  return "chat";
+}
+
 function toPoolName(tokenType: "sso" | "ssoSuper"): "ssoBasic" | "ssoSuper" {
   return tokenType === "ssoSuper" ? "ssoSuper" : "ssoBasic";
 }
 
 function poolToTokenType(pool: string): "sso" | "ssoSuper" | null {
-  if (pool === "ssoSuper") return "ssoSuper";
-  if (pool === "ssoBasic") return "sso";
+  const normalized = String(pool || "").trim();
+  if (normalized === "ssoSuper" || normalized === "super" || normalized === "heavy") return "ssoSuper";
+  if (normalized === "ssoBasic" || normalized === "basic" || normalized === "auto") return "sso";
   return null;
+}
+
+function maskUpstreamToken(token: string): string {
+  const value = String(token || "").trim();
+  return value.length > 20 ? `${value.slice(0, 8)}...${value.slice(-8)}` : value;
+}
+
+function tokenPoolForUpstream(row: TokenRow): "basic" | "super" {
+  return row.token_type === "ssoSuper" ? "super" : "basic";
+}
+
+function quotaBrief(row: TokenRow): Record<string, { remaining: number; total: number }> {
+  const remaining = Math.max(0, Number(row.remaining_queries ?? 0));
+  const heavyRemaining = Math.max(0, Number(row.heavy_remaining_queries ?? 0));
+  const normal = row.remaining_queries < 0 ? 0 : remaining;
+  const heavy = row.heavy_remaining_queries < 0 ? 0 : heavyRemaining;
+  return {
+    auto: { remaining: normal, total: normal },
+    fast: { remaining: normal, total: normal },
+    expert: { remaining: normal, total: normal },
+    heavy: { remaining: heavy, total: heavy },
+  };
+}
+
+function serializeUpstreamToken(row: TokenRow): Record<string, unknown> {
+  const disabled = row.status === "disabled";
+  const status = disabled ? "disabled" : row.status === "expired" ? "invalid" : "active";
+  return {
+    token: row.token,
+    pool: tokenPoolForUpstream(row),
+    status,
+    quota: quotaBrief(row),
+    use_count: 0,
+    last_used_at: null,
+    tags: (() => {
+      try {
+        const parsed = JSON.parse(row.tags || "[]");
+        return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+      } catch {
+        return [];
+      }
+    })(),
+  };
 }
 
 async function mapLimit<T, R>(
@@ -300,6 +366,92 @@ async function getOnlineAssetDetail(args: {
   }
 }
 
+async function refreshTokenQuota(args: {
+  env: Env;
+  token: string;
+  tokenType: "sso" | "ssoSuper";
+  settings: Awaited<ReturnType<typeof getSettings>>;
+}): Promise<{ refreshed: number; remaining?: number; heavy_remaining?: number }> {
+  const cookie = buildSsoCookie(args.token, args.settings.grok);
+  const result = await checkRateLimits(cookie, args.settings.grok, "grok-4");
+  const remaining = (result as any)?.remainingTokens;
+  let heavyRemaining: number | null = null;
+  if (args.tokenType === "ssoSuper") {
+    const heavy = await checkRateLimits(cookie, args.settings.grok, "grok-4-heavy");
+    const value = (heavy as any)?.remainingTokens;
+    if (typeof value === "number") heavyRemaining = value;
+  }
+  if (typeof remaining !== "number") {
+    throw new Error("未获取到真实配额数据");
+  }
+  await updateTokenLimits(args.env.DB, args.token, {
+    remaining_queries: remaining,
+    ...(heavyRemaining !== null ? { heavy_remaining_queries: heavyRemaining } : {}),
+  });
+  return {
+    refreshed: 1,
+    remaining,
+    ...(heavyRemaining !== null ? { heavy_remaining: heavyRemaining } : {}),
+  };
+}
+
+async function clearOnlineAssetsForToken(args: {
+  env: Env;
+  token: string;
+  tokenType: "sso" | "ssoSuper";
+  settings: Awaited<ReturnType<typeof getSettings>>;
+}): Promise<{ deleted: number }> {
+  const cookie = buildSsoCookie(args.token, args.settings.grok);
+  const assets = await listAssets({ cookie, settings: args.settings.grok });
+  const deleteLimit = Math.max(1, Math.min(50, Math.floor(args.settings.performance.assets_delete_batch_size || 10)));
+  let deleted = 0;
+  const errors: string[] = [];
+  await mapLimit(assets, deleteLimit, async (asset) => {
+    try {
+      await deleteAsset({ assetId: asset.id, cookie, settings: args.settings.grok });
+      deleted += 1;
+    } catch (e) {
+      errors.push(e instanceof Error ? e.message : String(e));
+    }
+  });
+  if (errors.length) throw new Error(errors[0]);
+  return { deleted };
+}
+
+async function batchTokenRows(env: Env, requested: string[] = []): Promise<TokenRow[]> {
+  const rows = await listTokens(env.DB);
+  const manageable = rows.filter(isTokenManageable);
+  if (!requested.length) return manageable;
+  const wanted = new Set(requested.map(normalizeSsoToken).filter(Boolean));
+  return manageable.filter((row) => wanted.has(row.token));
+}
+
+async function runTokenBatch<T>(args: {
+  rows: TokenRow[];
+  concurrency: number;
+  handler: (row: TokenRow) => Promise<T>;
+}): Promise<{ status: "success"; summary: { total: number; ok: number; fail: number }; results: Record<string, T | { error: string }> }> {
+  const results: Record<string, T | { error: string }> = {};
+  let ok = 0;
+  let fail = 0;
+  await mapLimit(args.rows, args.concurrency, async (row) => {
+    const key = maskUpstreamToken(row.token);
+    try {
+      const data = await args.handler(row);
+      ok += 1;
+      results[key] = data;
+    } catch (e) {
+      fail += 1;
+      results[key] = { error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  return {
+    status: "success",
+    summary: { total: args.rows.length, ok, fail },
+    results,
+  };
+}
+
 async function getKvStats(db: Env["DB"]): Promise<{
   image: { count: number; size_bytes: number; size_mb: number };
   video: { count: number; size_bytes: number; size_mb: number };
@@ -350,6 +502,87 @@ adminRoutes.post("/api/v1/admin/login", async (c) => {
 
 adminRoutes.get("/api/v1/admin/storage", requireAdminAuth, async (c) => {
   return c.json({ type: "d1" });
+});
+
+adminRoutes.get("/webui/api/verify", async (c) => {
+  const ok = await verifyWebuiAccess(c);
+  return ok ? c.json({ status: "success" }) : c.json({ detail: "Unauthorized" }, 401);
+});
+
+adminRoutes.get("/webui/api/models", async (c) => {
+  const ok = await verifyWebuiAccess(c);
+  if (!ok) return c.json({ detail: "Unauthorized" }, 401);
+  const pools = await getAvailableTokenPools(c.env.DB);
+  const created = Math.floor(Date.now() / 1000);
+  const data = Object.entries(MODEL_CONFIG)
+    .filter(([id]) => isModelAvailableForPools(id, pools))
+    .map(([id, cfg]) => ({
+      id,
+      object: "model",
+      created,
+      owned_by: "xai",
+      name: cfg.display_name,
+      capability: upstreamCapabilityName({ capabilities: cfg.capabilities }),
+    }));
+  return c.json({ object: "list", data });
+});
+
+adminRoutes.post("/webui/api/chat/completions", async (c) => {
+  const ok = await verifyWebuiAccess(c);
+  if (!ok) return c.json({ detail: "Unauthorized" }, 401);
+  const url = new URL(c.req.url);
+  url.pathname = "/chat/completions";
+  return openAiRoutes.fetch(new Request(url.toString(), c.req.raw), c.env, c.executionCtx);
+});
+
+adminRoutes.post("/webui/api/voice/token", async (c) => {
+  const ok = await verifyWebuiAccess(c);
+  if (!ok) return c.json({ detail: "Unauthorized" }, 401);
+
+  const body = (await c.req.json().catch(() => ({}))) as {
+    voice?: string;
+    personality?: string;
+    speed?: number;
+    instruction?: string;
+  };
+  const settings = await getSettings(c.env);
+  const chosen = await selectBestToken(c.env.DB, "grok-4.20-auto");
+  if (!chosen) return c.json(legacyErr("No available tokens for voice mode"), 503);
+
+  try {
+    const voiceArgs: {
+      cookie: string;
+      settings: typeof settings.grok;
+      voice?: string;
+      personality?: string;
+      speed?: number;
+      instruction?: string;
+    } = {
+      cookie: buildSsoCookie(chosen.token, settings.grok),
+      settings: settings.grok,
+    };
+    if (body.voice !== undefined) voiceArgs.voice = body.voice;
+    if (body.personality !== undefined) voiceArgs.personality = body.personality;
+    if (body.speed !== undefined) voiceArgs.speed = body.speed;
+    if (body.instruction !== undefined) voiceArgs.instruction = body.instruction;
+    const data = await fetchLivekitToken({
+      ...voiceArgs,
+    });
+    const token = String(data.token ?? "");
+    if (!token) throw new Error("Upstream returned no voice token");
+    return c.json({
+      token,
+      url: String(data.livekitUrl ?? "wss://livekit.grok.com"),
+      participant_name: String(data.participantName ?? data.participant_name ?? data.identity ?? ""),
+      room_name: String(data.roomName ?? data.room_name ?? data.room ?? ""),
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    const status = parseUpstreamStatusFromMessage(message);
+    await recordTokenFailure(c.env.DB, chosen.token, status, message.slice(0, 200));
+    await applyCooldown(c.env.DB, chosen.token, status);
+    return c.json(legacyErr(`Voice token error: ${message}`), 500);
+  }
 });
 
 adminRoutes.get("/api/v1/admin/config", requireAdminAuth, async (c) => {
@@ -499,7 +732,7 @@ adminRoutes.post("/api/v1/admin/config", requireAdminAuth, async (c) => {
   }
 });
 
-adminRoutes.get("/api/v1/admin/imagine/ws", async (c) => {
+async function handleImagineWs(c: any): Promise<Response> {
   const upgrade = c.req.header("upgrade") ?? c.req.header("Upgrade");
   if (String(upgrade ?? "").toLowerCase() !== "websocket") {
     return c.text("Expected websocket upgrade", 426);
@@ -708,7 +941,10 @@ adminRoutes.get("/api/v1/admin/imagine/ws", async (c) => {
   });
 
   return new Response(null, { status: 101, webSocket: client });
-});
+}
+
+adminRoutes.get("/api/v1/admin/imagine/ws", handleImagineWs);
+adminRoutes.get("/webui/api/imagine/ws", handleImagineWs);
 
 adminRoutes.get("/api/v1/admin/tokens", requireAdminAuth, async (c) => {
   try {
@@ -884,6 +1120,122 @@ adminRoutes.post("/api/v1/admin/tokens/disabled", requireAdminAuth, async (c) =>
   } catch (e) {
     return c.json(legacyErr(`Update token disabled failed: ${e instanceof Error ? e.message : String(e)}`), 500);
   }
+});
+
+adminRoutes.get("/admin/api/verify", requireAdminAuth, async (c) => {
+  return c.json({ status: "success" });
+});
+
+adminRoutes.get("/admin/api/storage", requireAdminAuth, async (c) => {
+  return c.json({ type: "d1" });
+});
+
+adminRoutes.get("/admin/api/status", requireAdminAuth, async (c) => {
+  const rows = await listTokens(c.env.DB);
+  const manageable = rows.filter(isTokenManageable).length;
+  return c.json({
+    status: "success",
+    runtime: "cloudflare-workers",
+    storage: "d1",
+    tokens: { total: rows.length, manageable },
+  });
+});
+
+adminRoutes.get("/admin/api/tokens", requireAdminAuth, async (c) => {
+  const rows = await listTokens(c.env.DB);
+  return c.json({ tokens: rows.map(serializeUpstreamToken) });
+});
+
+adminRoutes.post("/admin/api/tokens/add", requireAdminAuth, async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { tokens?: string[]; pool?: string; tags?: string[] };
+  const tokenType = poolToTokenType(String(body.pool ?? "basic")) ?? "sso";
+  const tokens = Array.isArray(body.tokens) ? body.tokens.map(normalizeSsoToken).filter(Boolean) : [];
+  const count = await addTokens(c.env.DB, tokens, tokenType);
+  return c.json({ status: "success", count, skipped: Math.max(0, tokens.length - count), synced: false });
+});
+
+adminRoutes.delete("/admin/api/tokens", requireAdminAuth, async (c) => {
+  const body = (await c.req.json().catch(() => [])) as string[] | { tokens?: string[] };
+  const tokens = Array.isArray(body)
+    ? body.map(normalizeSsoToken).filter(Boolean)
+    : Array.isArray(body.tokens)
+      ? body.tokens.map(normalizeSsoToken).filter(Boolean)
+      : [];
+  if (!tokens.length) return c.json(legacyErr("No valid tokens provided"), 400);
+  const rows = await listTokens(c.env.DB);
+  const byToken = new Map(rows.map((row) => [row.token, row]));
+  let deleted = 0;
+  for (const token of tokens) {
+    const row = byToken.get(token);
+    if (!row) continue;
+    deleted += await deleteTokens(c.env.DB, [token], row.token_type);
+  }
+  return c.json({ deleted });
+});
+
+adminRoutes.put("/admin/api/tokens/edit", requireAdminAuth, async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as {
+    old_token?: string;
+    token?: string;
+    pool?: string;
+    tags?: string[];
+  };
+  const oldToken = normalizeSsoToken(String(body.old_token ?? body.token ?? ""));
+  const newToken = normalizeSsoToken(String(body.token ?? ""));
+  if (!oldToken || !newToken) return c.json(legacyErr("Token is required"), 400);
+  const tokenType = poolToTokenType(String(body.pool ?? "basic")) ?? "sso";
+  if (oldToken !== newToken) {
+    const rows = await listTokens(c.env.DB);
+    const oldRow = rows.find((row) => row.token === oldToken);
+    if (oldRow) await deleteTokens(c.env.DB, [oldToken], oldRow.token_type);
+  }
+  await addTokens(c.env.DB, [newToken], tokenType);
+  if (Array.isArray(body.tags)) await updateTokenTags(c.env.DB, newToken, tokenType, body.tags);
+  return c.json({ status: "success", token: newToken, pool: tokenPoolForUpstream({ token_type: tokenType } as TokenRow) });
+});
+
+adminRoutes.post("/admin/api/tokens/disabled", requireAdminAuth, async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { token?: string; disabled?: boolean };
+  const token = normalizeSsoToken(String(body.token ?? ""));
+  if (!token) return c.json(legacyErr("Token is required"), 400);
+  const changed = await setTokensDisabled(c.env.DB, [token], Boolean(body.disabled));
+  return c.json({ status: "success", token, disabled: Boolean(body.disabled), changed });
+});
+
+adminRoutes.post("/admin/api/tokens/disabled/batch", requireAdminAuth, async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { tokens?: string[]; disabled?: boolean };
+  const tokens = Array.isArray(body.tokens) ? body.tokens.map(normalizeSsoToken).filter(Boolean) : [];
+  if (!tokens.length) return c.json(legacyErr("No valid tokens provided"), 400);
+  const changed = await setTokensDisabled(c.env.DB, tokens, Boolean(body.disabled));
+  return c.json({
+    status: "success",
+    disabled: Boolean(body.disabled),
+    summary: { total: tokens.length, ok: changed, fail: Math.max(0, tokens.length - changed) },
+  });
+});
+
+adminRoutes.put("/admin/api/tokens/pool", requireAdminAuth, async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { pool?: string; tokens?: string[]; tags?: string[] };
+  const pool = String(body.pool ?? "basic").trim().toLowerCase() || "basic";
+  const tokenType = poolToTokenType(pool) ?? "sso";
+  const tokens = Array.isArray(body.tokens) ? body.tokens.map(normalizeSsoToken).filter(Boolean) : [];
+  const existing = (await listTokens(c.env.DB)).filter((row) => tokenPoolForUpstream(row) === tokenPoolForUpstream({ token_type: tokenType } as TokenRow));
+  for (const row of existing) await deleteTokens(c.env.DB, [row.token], row.token_type);
+  const count = await addTokens(c.env.DB, tokens, tokenType);
+  if (Array.isArray(body.tags)) {
+    await mapLimit(tokens, 10, (token) => updateTokenTags(c.env.DB, token, tokenType, body.tags!));
+  }
+  return c.json({ pool, count });
+});
+
+adminRoutes.post("/api/v1/admin/tokens/nsfw/refresh", requireAdminAuth, async (c) => {
+  const rows = await listTokens(c.env.DB);
+  return c.json({
+    status: "success",
+    supported: false,
+    message: "Cloudflare Workers 版本暂未实现上游 NSFW gRPC-Web 刷新序列。",
+    summary: { total: rows.filter(isTokenManageable).length, success: 0, failed: 0, invalidated: 0 },
+  });
 });
 
 adminRoutes.get("/api/v1/admin/cache/local", requireAdminAuth, async (c) => {
@@ -1065,6 +1417,190 @@ adminRoutes.post("/api/v1/admin/cache/online/clear", requireAdminAuth, async (c)
   } catch (e) {
     return c.json(legacyErr(`Clear online assets failed: ${e instanceof Error ? e.message : String(e)}`), 500);
   }
+});
+
+adminRoutes.get("/admin/api/cache", requireAdminAuth, async (c) => {
+  try {
+    const stats = await getKvStats(c.env.DB);
+    return c.json({ local_image: stats.image, local_video: stats.video });
+  } catch (e) {
+    return c.json(legacyErr(`Get cache failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
+});
+
+adminRoutes.get("/admin/api/cache/list", requireAdminAuth, async (c) => {
+  try {
+    const t = String(c.req.query("type") ?? c.req.query("cache_type") ?? "image").toLowerCase();
+    const type: CacheType = t === "video" ? "video" : "image";
+    const page = Math.max(1, Number(c.req.query("page") ?? 1));
+    const pageSize = Math.max(1, Math.min(5000, Number(c.req.query("page_size") ?? 1000)));
+    const offset = (page - 1) * pageSize;
+    const { total, items } = await listCacheRowsByType(c.env.DB, type, pageSize, offset);
+    return c.json({
+      status: "success",
+      total,
+      page,
+      page_size: pageSize,
+      items: items.map((item) => ({
+        name: item.key.startsWith(`${type}/`) ? item.key.slice(type.length + 1) : item.key,
+        size_bytes: item.size,
+        modified_at: item.last_access_at || item.created_at,
+      })),
+    });
+  } catch (e) {
+    return c.json(legacyErr(`List cache failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
+});
+
+adminRoutes.post("/admin/api/cache/clear", requireAdminAuth, async (c) => {
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as { type?: string };
+    const type: CacheType = String(body.type ?? "image").toLowerCase() === "video" ? "video" : "image";
+    const removed = await clearKvCacheByType(c.env, type);
+    return c.json({ status: "success", result: { removed } });
+  } catch (e) {
+    return c.json(legacyErr(`Clear cache failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
+});
+
+adminRoutes.post("/admin/api/cache/item/delete", requireAdminAuth, async (c) => {
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as { type?: string; name?: string };
+    const type: CacheType = String(body.type ?? "image").toLowerCase() === "video" ? "video" : "image";
+    const name = String(body.name ?? "").trim();
+    if (!name) return c.json(legacyErr("Missing file name"), 400);
+    const key = name.startsWith(`${type}/`) ? name : `${type}/${name}`;
+    await c.env.KV_CACHE.delete(key);
+    await dbRun(c.env.DB, "DELETE FROM kv_cache WHERE key = ?", [key]);
+    return c.json({ status: "success", result: { deleted: name } });
+  } catch (e) {
+    return c.json(legacyErr(`Delete cache item failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
+});
+
+adminRoutes.post("/admin/api/cache/items/delete", requireAdminAuth, async (c) => {
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as { type?: string; names?: string[] };
+    const type: CacheType = String(body.type ?? "image").toLowerCase() === "video" ? "video" : "image";
+    const names = Array.isArray(body.names) ? body.names.map((name) => String(name || "").trim()).filter(Boolean) : [];
+    if (!names.length) return c.json(legacyErr("Missing file names"), 400);
+    let deleted = 0;
+    for (const name of names) {
+      const key = name.startsWith(`${type}/`) ? name : `${type}/${name}`;
+      await c.env.KV_CACHE.delete(key);
+      await dbRun(c.env.DB, "DELETE FROM kv_cache WHERE key = ?", [key]);
+      deleted += 1;
+    }
+    return c.json({ status: "success", result: { deleted, missing: 0 } });
+  } catch (e) {
+    return c.json(legacyErr(`Delete cache items failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
+});
+
+adminRoutes.get("/admin/api/assets", requireAdminAuth, async (c) => {
+  try {
+    const settings = await getSettings(c.env);
+    const rows = await batchTokenRows(c.env);
+    const limit = Math.max(1, Math.min(50, Math.floor(settings.performance.admin_assets_batch_size || 10)));
+    const details = await mapLimit(rows, limit, (row) =>
+      getOnlineAssetDetail({ token: row.token, tokenType: row.token_type, settings, env: c.env }),
+    );
+    const tokens = details.map((item) => ({
+      token: item.token,
+      masked: item.token_masked,
+      count: item.count,
+      assets: item.assets,
+      error: item.error ?? null,
+    }));
+    const total_assets = tokens.reduce((sum, row) => sum + Number(row.count || 0), 0);
+    return c.json({ tokens, total_assets });
+  } catch (e) {
+    return c.json(legacyErr(`List assets failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
+});
+
+adminRoutes.post("/admin/api/assets/delete-item", requireAdminAuth, async (c) => {
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as { token?: string; asset_id?: string };
+    const token = normalizeSsoToken(String(body.token ?? ""));
+    const assetId = String(body.asset_id ?? "").trim();
+    if (!token || !assetId) return c.json(legacyErr("token and asset_id are required"), 400);
+    const settings = await getSettings(c.env);
+    await deleteAsset({ assetId, cookie: buildSsoCookie(token, settings.grok), settings: settings.grok });
+    return c.json({ status: "success" });
+  } catch (e) {
+    return c.json(legacyErr(`Delete asset failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
+});
+
+adminRoutes.post("/admin/api/assets/clear-token", requireAdminAuth, async (c) => {
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as { token?: string };
+    const token = normalizeSsoToken(String(body.token ?? ""));
+    if (!token) return c.json(legacyErr("Token is required"), 400);
+    const rows = await listTokens(c.env.DB);
+    const row = rows.find((item) => item.token === token);
+    if (!row) return c.json(legacyErr("Token not found"), 404);
+    const settings = await getSettings(c.env);
+    const result = await clearOnlineAssetsForToken({ env: c.env, token: row.token, tokenType: row.token_type, settings });
+    return c.json({ status: "success", deleted: result.deleted });
+  } catch (e) {
+    return c.json(legacyErr(`Clear token assets failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
+});
+
+adminRoutes.post("/admin/api/batch/refresh", requireAdminAuth, async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { tokens?: string[] };
+  const requested = Array.isArray(body.tokens) ? body.tokens : [];
+  const rows = await batchTokenRows(c.env, requested);
+  if (!rows.length) return c.json(legacyErr(requested.length ? "No matching tokens found" : "No tokens provided"), 400);
+  const settings = await getSettings(c.env);
+  const concurrency = Math.max(1, Math.min(50, Number(c.req.query("concurrency") ?? settings.performance.usage_max_concurrent ?? 10)));
+  const result = await runTokenBatch({
+    rows,
+    concurrency,
+    handler: (row) => refreshTokenQuota({ env: c.env, token: row.token, tokenType: row.token_type, settings }),
+  });
+  return c.json(result);
+});
+
+adminRoutes.post("/admin/api/batch/cache-clear", requireAdminAuth, async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { tokens?: string[] };
+  const requested = Array.isArray(body.tokens) ? body.tokens : [];
+  const rows = await batchTokenRows(c.env, requested);
+  if (!rows.length) return c.json(legacyErr("No tokens available"), 400);
+  const settings = await getSettings(c.env);
+  const concurrency = Math.max(1, Math.min(50, Number(c.req.query("concurrency") ?? settings.performance.admin_assets_batch_size ?? 10)));
+  const result = await runTokenBatch({
+    rows,
+    concurrency,
+    handler: (row) => clearOnlineAssetsForToken({ env: c.env, token: row.token, tokenType: row.token_type, settings }),
+  });
+  return c.json(result);
+});
+
+adminRoutes.post("/admin/api/batch/nsfw", requireAdminAuth, async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { tokens?: string[] };
+  const requested = Array.isArray(body.tokens) ? body.tokens : [];
+  const rows = await batchTokenRows(c.env, requested);
+  return c.json({
+    status: "success",
+    supported: false,
+    message: "Cloudflare Workers 版本暂未实现上游 NSFW gRPC-Web 刷新序列。",
+    summary: { total: rows.length, ok: 0, fail: rows.length },
+    results: Object.fromEntries(rows.map((row) => [maskUpstreamToken(row.token), { error: "unsupported_on_workers" }])),
+  });
+});
+
+adminRoutes.get("/admin/api/batch/:taskId/stream", requireAdminAuth, async (c) => {
+  return new Response(
+    `data: ${JSON.stringify({ type: "error", message: "Async batch tasks are not persisted in the Workers runtime." })}\n\n`,
+    { status: 200, headers: { "content-type": "text/event-stream; charset=utf-8" } },
+  );
+});
+
+adminRoutes.post("/admin/api/batch/:taskId/cancel", requireAdminAuth, async (c) => {
+  return c.json({ status: "success", supported: false });
 });
 
 adminRoutes.get("/api/v1/admin/metrics", requireAdminAuth, async (c) => {

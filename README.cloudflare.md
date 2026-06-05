@@ -230,6 +230,25 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml config
 - GET /images/<img_path>: reads from KV cache; on miss fetches assets.grok.com and writes back to KV (daily expiry/cleanup policy)
 - Note: Workers KV single-value size is limited (recommended <= 25MB); most video players use Range requests, which may bypass KV hits
 - Admin APIs: /api/*
+- Upstream WebUI pages:
+  - GET /webui/login
+  - GET /webui/chat
+  - GET /webui/masonry
+  - GET /webui/chatkit
+- Upstream WebUI APIs:
+  - GET /webui/api/models
+  - POST /webui/api/chat/completions
+  - GET /webui/api/imagine/ws
+  - POST /webui/api/voice/token
+- Upstream admin compatibility APIs:
+  - /admin/api/tokens*
+  - /admin/api/assets*
+  - /admin/api/cache*
+  - /admin/api/batch/*
+
+WebUI 鉴权复用现有 API Key：如果已配置全局 API Key 或已创建启用状态的 Keys，请用 Bearer token / access_token / api_key 访问；如果没有任何 Key，WebUI 允许匿名进入，便于首次初始化。
+
+兼容说明：Workers 版本已提供上游 WebUI、token、cache、assets 与批量接口的兼容层；其中 NSFW 批量刷新和异步 batch SSE 持久化受 Workers 运行环境限制，当前只返回兼容格式与 `supported: false`，不是完整上游行为。
 
 ### 8.1) 管理后台 API 兼容语义（与 FastAPI 一致）
 

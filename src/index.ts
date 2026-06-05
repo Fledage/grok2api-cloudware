@@ -65,6 +65,18 @@ async function fetchAsset(c: any, pathname: string): Promise<Response> {
       extra["expires"] = "0";
     }
 
+    if (lower.endsWith(".html")) {
+      const body = await res.text();
+      return withResponseHeaders(
+        new Response(body.replaceAll("{{APP_VERSION}}", buildSha), {
+          status: res.status,
+          statusText: res.statusText,
+          headers: res.headers,
+        }),
+        extra,
+      );
+    }
+
     return withResponseHeaders(res, extra);
   } catch (err) {
     console.error(`ASSETS fetch failed (${pathname}):`, err);
@@ -172,6 +184,36 @@ app.get("/admin/chat", (c) => {
   const v = c.req.query("v") ?? "";
   if (v !== buildSha) return c.redirect(`/admin/chat?v=${encodeURIComponent(buildSha)}`, 302);
   return fetchAsset(c, "/chat/chat_admin.html");
+});
+
+app.get("/webui", (c) => c.redirect("/webui/login", 302));
+
+app.get("/webui/login", (c) => {
+  const buildSha = getBuildSha(c.env as Env);
+  const v = c.req.query("v") ?? "";
+  if (v !== buildSha) return c.redirect(`/webui/login?v=${encodeURIComponent(buildSha)}`, 302);
+  return fetchAsset(c, "/webui/login.html");
+});
+
+app.get("/webui/chat", (c) => {
+  const buildSha = getBuildSha(c.env as Env);
+  const v = c.req.query("v") ?? "";
+  if (v !== buildSha) return c.redirect(`/webui/chat?v=${encodeURIComponent(buildSha)}`, 302);
+  return fetchAsset(c, "/webui/chat.html");
+});
+
+app.get("/webui/masonry", (c) => {
+  const buildSha = getBuildSha(c.env as Env);
+  const v = c.req.query("v") ?? "";
+  if (v !== buildSha) return c.redirect(`/webui/masonry?v=${encodeURIComponent(buildSha)}`, 302);
+  return fetchAsset(c, "/webui/masonry.html");
+});
+
+app.get("/webui/chatkit", (c) => {
+  const buildSha = getBuildSha(c.env as Env);
+  const v = c.req.query("v") ?? "";
+  if (v !== buildSha) return c.redirect(`/webui/chatkit?v=${encodeURIComponent(buildSha)}`, 302);
+  return fetchAsset(c, "/webui/chatkit.html");
 });
 
 app.get("/static/*", (c) => {
