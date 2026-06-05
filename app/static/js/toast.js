@@ -16,7 +16,7 @@ function _esc(s) {
 }
 
 function showToast(message, type = 'success') {
-  const tone = type === 'error' ? 'error' : (type === 'info' ? 'info' : 'success');
+  const tone = type === 'error' ? 'error' : (type === 'info' || type === 'warning' ? 'info' : 'success');
   const icon = tone === 'success'
     ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>'
     : tone === 'error'

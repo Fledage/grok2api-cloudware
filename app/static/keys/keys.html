@@ -5,20 +5,19 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Grok2API - API Key 管理</title>
-  <link rel="icon" href="/static/favicon/favicon.ico">
+  <link rel="icon" href="/favicon.ico?v={{APP_VERSION}}">
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
-  <link href="/static/common/common.css?v=3" rel="stylesheet">
+  <link href="/static/css/app.css?v={{APP_VERSION}}" rel="stylesheet">
   <link href="/static/keys/keys.css?v=3" rel="stylesheet">
-  <link href="/static/common/toast.css" rel="stylesheet">
 </head>
 
-<body class="min-h-screen flex flex-col" style="background-color: var(--bg);">
+<body style="background:#FAF9F5">
   <div id="toast-container" class="toast-container"></div>
-  <div id="app-header"></div>
+  <div id="admin-header" data-active="/admin/keys"></div>
 
-  <main class="space-y-6 flex-1 container mx-auto max-w-4xl px-6 py-8 fade-in">
+  <main class="admin-main space-y-6 fade-in">
     <div class="keys-page-header flex flex-wrap justify-between items-start gap-3">
       <div>
         <h2 class="text-2xl font-semibold tracking-tight">API Key 管理</h2>
@@ -163,10 +162,16 @@
     </div>
   </div>
 
-  <script src="/static/common/toast.js"></script>
-  <script src="/static/common/admin-auth.js"></script>
-  <script src="/static/common/header.js?v=4"></script>
-  <script src="/static/common/footer.js"></script>
+  <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/admin-legacy-auth.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
+  <script>
+    renderAdminHeader?.();
+    renderSiteFooter?.();
+  </script>
   <script src="/static/keys/keys.js?v=3"></script>
 </body>
 

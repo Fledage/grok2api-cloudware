@@ -131,17 +131,13 @@ app.get("/", (c) => c.redirect("/admin", 302));
 
 app.get("/login", (c) => {
   const buildSha = getBuildSha(c.env as Env);
-  const v = c.req.query("v") ?? "";
-  if (v !== buildSha) return c.redirect(`/login?v=${encodeURIComponent(buildSha)}`, 302);
-  return fetchAsset(c, "/login/login.html");
+  return c.redirect(`/admin/login?v=${encodeURIComponent(buildSha)}`, 302);
 });
 
 // Legacy (old admin UI): keep /manage as an alias.
 app.get("/manage", (c) => {
   const buildSha = getBuildSha(c.env as Env);
-  const v = c.req.query("v") ?? "";
-  if (v !== buildSha) return c.redirect(`/admin/token?v=${encodeURIComponent(buildSha)}`, 302);
-  return c.redirect(`/admin/token?v=${encodeURIComponent(buildSha)}`, 302);
+  return c.redirect(`/admin/account?v=${encodeURIComponent(buildSha)}`, 302);
 });
 
 app.get("/admin", (c) => c.redirect("/admin/login", 302));
@@ -162,9 +158,7 @@ app.get("/admin/account", (c) => {
 
 app.get("/admin/token", (c) => {
   const buildSha = getBuildSha(c.env as Env);
-  const v = c.req.query("v") ?? "";
-  if (v !== buildSha) return c.redirect(`/admin/token?v=${encodeURIComponent(buildSha)}`, 302);
-  return fetchAsset(c, "/token/token.html");
+  return c.redirect(`/admin/account?v=${encodeURIComponent(buildSha)}`, 302);
 });
 
 app.get("/admin/datacenter", (c) => {

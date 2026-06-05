@@ -41,10 +41,27 @@ function makeResult(results) {
 
 const adminHeaderHtml = readFileSync(join(rootPath, "app/static/admin/header.html"), "utf8");
 const adminHeaderJs = readFileSync(join(rootPath, "app/static/js/admin-header.js"), "utf8");
+const legacyAdminPages = [
+  "app/static/keys/keys.html",
+  "app/static/chat/chat_admin.html",
+  "app/static/datacenter/datacenter.html",
+];
 assert.ok(adminHeaderJs.includes("hasCurrentAdminNav"), "admin header cache should validate nav freshness");
-for (const href of ["/admin/token", "/admin/keys", "/admin/chat", "/admin/datacenter", "/admin/config", "/admin/cache"]) {
+assert.ok(adminHeaderJs.includes("fallbackHeaderHtml"), "admin header should render synchronously from inline markup");
+for (const href of ["/admin/account", "/admin/keys", "/admin/chat", "/admin/datacenter", "/admin/config", "/admin/cache"]) {
   assert.ok(adminHeaderHtml.includes(`href="${href}"`), `admin header should link ${href}`);
   assert.ok(adminHeaderJs.includes(`href="${href}"`), `admin header fallback should link ${href}`);
+}
+assert.equal(adminHeaderHtml.includes('href="/admin/token"'), false, "admin header should not duplicate token/account navigation");
+assert.equal(adminHeaderJs.includes('href="/admin/token"'), false, "admin header fallback should not duplicate token/account navigation");
+for (const pagePath of legacyAdminPages) {
+  const html = readFileSync(join(rootPath, pagePath), "utf8");
+  assert.ok(html.includes('id="admin-header"'), `${pagePath} should mount the shared admin header`);
+  assert.ok(html.includes("/static/js/admin-header.js"), `${pagePath} should use the shared admin header script`);
+  assert.ok(html.includes("/static/css/app.css"), `${pagePath} should use the shared admin design system`);
+  assert.ok(!html.includes("/static/common/header.js"), `${pagePath} should not use the legacy common header`);
+  assert.ok(!html.includes("/static/common/common.css"), `${pagePath} should not use the legacy common stylesheet`);
+  assert.ok(!html.includes('id="app-header"'), `${pagePath} should not mount the legacy app header`);
 }
 
 const fetchCalls = [];

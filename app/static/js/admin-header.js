@@ -13,13 +13,77 @@ window.renderAdminHeader = async function renderAdminHeader() {
   const HEADER_HTML_CACHE_KEY = `grok2api.admin_header_html.${scriptVersion}`;
   const META_VERSION_CACHE_KEY = `grok2api.meta_version.${scriptVersion}`;
   const requiredAdminNavHrefs = [
-    '/admin/token',
+    '/admin/account',
     '/admin/keys',
     '/admin/chat',
     '/admin/datacenter',
     '/admin/config',
     '/admin/cache',
   ];
+  const forbiddenAdminNavHrefs = ['/admin/token'];
+  const fallbackHeaderHtml = `
+      <header class="admin-header">
+        <div class="admin-header-inner">
+          <div class="admin-brand-wrap">
+            <a href="https://github.com/chenyme/grok2api" target="_blank" rel="noopener" class="admin-brand-link">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="opacity:.75;flex-shrink:0"><path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.5 2.87 8.32 6.84 9.67.5.1.68-.22.68-.48 0-.24-.01-.86-.01-1.69-2.78.62-3.37-1.37-3.37-1.37-.45-1.17-1.11-1.48-1.11-1.48-.91-.64.07-.63.07-.63 1.01.07 1.54 1.06 1.54 1.06.9 1.58 2.36 1.12 2.94.86.09-.67.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.04 1.03-2.76-.1-.26-.45-1.3.1-2.71 0 0 .84-.27 2.75 1.05A9.3 9.3 0 0 1 12 6.79c.85 0 1.7.12 2.5.36 1.9-1.32 2.74-1.05 2.74-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.64 1.03 2.76 0 3.94-2.34 4.81-4.58 5.06.36.32.68.95.68 1.92 0 1.38-.01 2.49-.01 2.83 0 .26.18.58.69.48A10.05 10.05 0 0 0 22 12.26C22 6.58 17.52 2 12 2Z"/></svg>
+              <span class="admin-brand">Grok2API</span>
+            </a>
+            <a href="https://blog.cheny.me/" target="_blank" rel="noopener" class="admin-username" id="hd-user">@Chenyme</a>
+          </div>
+          <nav class="admin-nav">
+            <a href="/admin/account" class="admin-nav-link" data-nav="/admin/account" data-i18n="header.account">账户管理</a>
+            <a href="/admin/keys" class="admin-nav-link" data-nav="/admin/keys" data-i18n="header.keys">API Key 管理</a>
+            <a href="/admin/chat" class="admin-nav-link" data-nav="/admin/chat" data-i18n="header.chat">在线聊天</a>
+            <a href="/admin/datacenter" class="admin-nav-link" data-nav="/admin/datacenter" data-i18n="header.datacenter">数据中心</a>
+            <a href="/admin/config" class="admin-nav-link" data-nav="/admin/config" data-i18n="header.config">配置管理</a>
+            <a href="/admin/cache" class="admin-nav-link" data-nav="/admin/cache" data-i18n="header.cache">缓存管理</a>
+          </nav>
+          <div class="admin-header-right">
+            <div class="admin-lang-menu" id="hd-lang-menu">
+              <button type="button" class="btn admin-header-control admin-lang-trigger" id="hd-lang-trigger" aria-label="Language" aria-haspopup="menu" aria-expanded="false">
+                <span class="admin-lang-trigger-code" id="hd-lang-code">CN</span>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m7 10 5 5 5-5"/>
+                </svg>
+              </button>
+              <div class="admin-lang-popover" id="hd-lang-popover" role="menu" aria-labelledby="hd-lang-trigger">
+                <button type="button" class="admin-lang-option" data-lang="zh" role="menuitem">
+                  <span class="admin-lang-option-code">CN</span>
+                  <span class="admin-lang-option-name">简体中文</span>
+                </button>
+                <button type="button" class="admin-lang-option" data-lang="en" role="menuitem">
+                  <span class="admin-lang-option-code">EN</span>
+                  <span class="admin-lang-option-name">English</span>
+                </button>
+                <button type="button" class="admin-lang-option" data-lang="ja" role="menuitem">
+                  <span class="admin-lang-option-code">JA</span>
+                  <span class="admin-lang-option-name">日本語</span>
+                </button>
+                <button type="button" class="admin-lang-option" data-lang="es" role="menuitem">
+                  <span class="admin-lang-option-code">ES</span>
+                  <span class="admin-lang-option-name">Español</span>
+                </button>
+                <button type="button" class="admin-lang-option" data-lang="de" role="menuitem">
+                  <span class="admin-lang-option-code">DE</span>
+                  <span class="admin-lang-option-name">Deutsch</span>
+                </button>
+                <button type="button" class="admin-lang-option" data-lang="fr" role="menuitem">
+                  <span class="admin-lang-option-code">FR</span>
+                  <span class="admin-lang-option-name">Français</span>
+                </button>
+              </div>
+            </div>
+            <button onclick="adminLogout()" class="btn admin-header-control admin-header-icon-btn" id="hd-logout" aria-label="Logout" title="Logout">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                <path d="M16 17l5-5-5-5"/>
+                <path d="M21 12H9"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </header>`;
   let appVersion = '';
   let updateInfo = null;
   let updateStatus = 'idle';
@@ -42,7 +106,9 @@ window.renderAdminHeader = async function renderAdminHeader() {
 
   const hasCurrentAdminNav = (html) => {
     const value = String(html || '');
-    return requiredAdminNavHrefs.every((href) => value.includes(`href="${href}"`) || value.includes(`href='${href}'`));
+    const hasRequired = requiredAdminNavHrefs.every((href) => value.includes(`href="${href}"`) || value.includes(`href='${href}'`));
+    const hasForbidden = forbiddenAdminNavHrefs.some((href) => value.includes(`href="${href}"`) || value.includes(`href='${href}'`));
+    return hasRequired && !hasForbidden;
   };
 
   const languageCodes = {
@@ -573,85 +639,8 @@ window.renderAdminHeader = async function renderAdminHeader() {
     };
   };
 
-  await loadVersion();
-
-  try {
-    const cachedHtml = window.__grok2apiAdminHeaderHtml || readSessionCache(HEADER_HTML_CACHE_KEY);
-    if (cachedHtml && hasCurrentAdminNav(cachedHtml)) {
-      mount.innerHTML = cachedHtml;
-    } else {
-      const res = await fetch('/static/admin/header.html');
-      if (!res.ok) throw new Error('header unavailable');
-      const html = await res.text();
-      mount.innerHTML = html;
-      window.__grok2apiAdminHeaderHtml = html;
-      writeSessionCache(HEADER_HTML_CACHE_KEY, html);
-    }
-  } catch {
-    mount.innerHTML = `
-      <header class="admin-header">
-        <div class="admin-header-inner">
-          <div class="admin-brand-wrap">
-            <a href="https://github.com/chenyme/grok2api" target="_blank" rel="noopener" class="admin-brand-link">
-              <span class="admin-brand">Grok2API</span>
-            </a>
-            <a href="https://blog.cheny.me/" target="_blank" rel="noopener" class="admin-username" id="hd-user">@Chenyme</a>
-          </div>
-          <nav class="admin-nav">
-            <a href="/admin/account" class="admin-nav-link" data-nav="/admin/account" data-i18n="header.account">账户管理</a>
-            <a href="/admin/token" class="admin-nav-link" data-nav="/admin/token" data-i18n="header.token">Token 管理</a>
-            <a href="/admin/keys" class="admin-nav-link" data-nav="/admin/keys" data-i18n="header.keys">API Key 管理</a>
-            <a href="/admin/chat" class="admin-nav-link" data-nav="/admin/chat" data-i18n="header.chat">在线聊天</a>
-            <a href="/admin/datacenter" class="admin-nav-link" data-nav="/admin/datacenter" data-i18n="header.datacenter">数据中心</a>
-            <a href="/admin/config" class="admin-nav-link" data-nav="/admin/config" data-i18n="header.config">配置管理</a>
-            <a href="/admin/cache" class="admin-nav-link" data-nav="/admin/cache" data-i18n="header.cache">缓存管理</a>
-          </nav>
-          <div class="admin-header-right">
-            <div class="admin-lang-menu" id="hd-lang-menu">
-              <button type="button" class="btn admin-header-control admin-lang-trigger" id="hd-lang-trigger" aria-label="Language" aria-haspopup="menu" aria-expanded="false">
-                <span class="admin-lang-trigger-code" id="hd-lang-code">CN</span>
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="m7 10 5 5 5-5"/>
-                </svg>
-              </button>
-              <div class="admin-lang-popover" id="hd-lang-popover" role="menu" aria-labelledby="hd-lang-trigger">
-                <button type="button" class="admin-lang-option" data-lang="zh" role="menuitem">
-                  <span class="admin-lang-option-code">CN</span>
-                  <span class="admin-lang-option-name">简体中文</span>
-                </button>
-                <button type="button" class="admin-lang-option" data-lang="en" role="menuitem">
-                  <span class="admin-lang-option-code">EN</span>
-                  <span class="admin-lang-option-name">English</span>
-                </button>
-                <button type="button" class="admin-lang-option" data-lang="ja" role="menuitem">
-                  <span class="admin-lang-option-code">JA</span>
-                  <span class="admin-lang-option-name">日本語</span>
-                </button>
-                <button type="button" class="admin-lang-option" data-lang="es" role="menuitem">
-                  <span class="admin-lang-option-code">ES</span>
-                  <span class="admin-lang-option-name">Español</span>
-                </button>
-                <button type="button" class="admin-lang-option" data-lang="de" role="menuitem">
-                  <span class="admin-lang-option-code">DE</span>
-                  <span class="admin-lang-option-name">Deutsch</span>
-                </button>
-                <button type="button" class="admin-lang-option" data-lang="fr" role="menuitem">
-                  <span class="admin-lang-option-code">FR</span>
-                  <span class="admin-lang-option-name">Français</span>
-                </button>
-              </div>
-            </div>
-            <button onclick="adminLogout()" class="btn admin-header-control admin-header-icon-btn" id="hd-logout" aria-label="Logout" title="Logout">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-                <path d="M16 17l5-5-5-5"/>
-                <path d="M21 12H9"/>
-              </svg>
-            </button>
-          </div>
-        </div>
-      </header>`;
-  }
+  const cachedHtml = window.__grok2apiAdminHeaderHtml || readSessionCache(HEADER_HTML_CACHE_KEY);
+  mount.innerHTML = cachedHtml && hasCurrentAdminNav(cachedHtml) ? cachedHtml : fallbackHeaderHtml;
 
   const active = mount.dataset.active || location.pathname;
   mount.querySelectorAll('[data-nav]').forEach((link) => {
@@ -662,6 +651,26 @@ window.renderAdminHeader = async function renderAdminHeader() {
   applyHeaderI18n();
   applyVersion();
   syncLanguageMenu?.();
+  window.I18n?.onReady?.(() => {
+    applyHeaderI18n();
+    syncLanguageMenu?.();
+  });
+
+  void loadVersion().then(() => {
+    applyVersion();
+  });
+
+  void (async () => {
+    try {
+      const res = await fetch('/static/admin/header.html', { cache: 'no-store' });
+      if (!res.ok) throw new Error('header unavailable');
+      const html = await res.text();
+      if (hasCurrentAdminNav(html)) {
+        window.__grok2apiAdminHeaderHtml = html;
+        writeSessionCache(HEADER_HTML_CACHE_KEY, html);
+      }
+    } catch {}
+  })();
 
   const versionModal = ensureVersionModal();
   versionModal.querySelector('#admin-version-modal-refresh')?.addEventListener('click', async () => {
