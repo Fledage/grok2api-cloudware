@@ -71,6 +71,10 @@ function openAiError(message: string, code: string): Record<string, unknown> {
   return { error: { message, type: "invalid_request_error", code } };
 }
 
+function resolveDefaultStream(requestStream: unknown, defaultStream: boolean): boolean {
+  return requestStream === undefined ? defaultStream : Boolean(requestStream);
+}
+
 function getClientIp(req: Request): string {
   return (
     req.headers.get("CF-Connecting-IP") ||
@@ -1341,7 +1345,7 @@ openAiRoutes.post("/chat/completions", async (c) => {
       ? settingsBundle.grok.retry_status_codes
       : [401, 429];
 
-    const stream = Boolean(body.stream);
+    const stream = resolveDefaultStream(body.stream, Boolean(settingsBundle.grok.stream));
     const maxRetry = 3;
     let lastErr: string | null = null;
 
@@ -1828,7 +1832,7 @@ openAiRoutes.post("/responses", async (c) => {
     const retryCodes = Array.isArray(settingsBundle.grok.retry_status_codes)
       ? settingsBundle.grok.retry_status_codes
       : [401, 429];
-    const stream = Boolean(body.stream);
+    const stream = resolveDefaultStream(body.stream, Boolean(settingsBundle.grok.stream));
     let lastErr: string | null = null;
 
     const quota = await enforceQuota({
@@ -1984,7 +1988,7 @@ openAiRoutes.post("/messages", async (c) => {
     const retryCodes = Array.isArray(settingsBundle.grok.retry_status_codes)
       ? settingsBundle.grok.retry_status_codes
       : [401, 429];
-    const stream = Boolean(body.stream);
+    const stream = resolveDefaultStream(body.stream, Boolean(settingsBundle.grok.stream));
     let lastErr: string | null = null;
 
     const quota = await enforceQuota({

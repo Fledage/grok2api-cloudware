@@ -26,6 +26,7 @@ export interface GrokSettings {
   x_statsig_id?: string;
   dynamic_statsig?: boolean;
   filtered_tags?: string;
+  stream?: boolean;
   show_thinking?: boolean;
   temporary?: boolean;
   video_poster_preview?: boolean;
@@ -92,6 +93,7 @@ const DEFAULTS: SettingsBundle = {
     x_statsig_id: "",
     dynamic_statsig: true,
     filtered_tags: "xaiartifact,xai:tool_usage_card",
+    stream: false,
     show_thinking: true,
     temporary: true,
     video_poster_preview: false,

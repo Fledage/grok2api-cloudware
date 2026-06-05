@@ -18,6 +18,10 @@
   },
   "header": {
     "account": "Account Management",
+    "token": "Token Management",
+    "keys": "API Key Management",
+    "chat": "Chat",
+    "datacenter": "Data Center",
     "config": "Configuration Management",
     "cache": "Cache Management",
     "languageLabel": "Language",

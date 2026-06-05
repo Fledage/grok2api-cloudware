@@ -129,6 +129,10 @@
   },
   "header": {
     "account": "Kontoverwaltung",
+    "token": "Token-Verwaltung",
+    "keys": "API-Key-Verwaltung",
+    "chat": "Chat",
+    "datacenter": "Datenzentrum",
     "config": "Konfigurationsverwaltung",
     "cache": "Cache-Verwaltung",
     "languageLabel": "Sprache",

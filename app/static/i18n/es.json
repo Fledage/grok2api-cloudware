@@ -129,6 +129,10 @@
   },
   "header": {
     "account": "Gestión de Cuentas",
+    "token": "Gestión de Tokens",
+    "keys": "Gestión de API Keys",
+    "chat": "Chat",
+    "datacenter": "Centro de Datos",
     "config": "Gestión de Configuración",
     "cache": "Gestión de Caché",
     "languageLabel": "Idioma",

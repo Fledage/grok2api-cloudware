@@ -448,7 +448,66 @@ async function refreshNsfwForToken(args: {
   return { success: true, tagged: result.tagged, steps: result.steps };
 }
 
-async function adminConfigPayload(env: Env): Promise<Record<string, unknown>> {
+type AdminConfigObject = Record<string, any>;
+
+function asConfigObject(value: unknown): AdminConfigObject | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as AdminConfigObject) : null;
+}
+
+function parseConfigNumberList(value: unknown): number[] {
+  const raw = Array.isArray(value)
+    ? value
+    : String(value ?? "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+  return raw
+    .map((item) => Number(item))
+    .filter((n) => Number.isFinite(n))
+    .map((n) => Math.floor(n));
+}
+
+function configPositiveInt(value: unknown, min = 1): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(min, Math.floor(n));
+}
+
+function legacyImageModeFromUi(value: unknown): "url" | "base64" | "b64_json" | null {
+  const mode = String(value ?? "").trim().toLowerCase();
+  if (mode === "url" || mode === "base64" || mode === "b64_json") return mode;
+  if (mode === "grok_url" || mode === "local_url" || mode === "grok_md" || mode === "local_md") return "url";
+  return null;
+}
+
+function uiImageFormatFromLegacy(mode: unknown): string {
+  const value = String(mode ?? "").trim().toLowerCase();
+  return value === "base64" || value === "b64_json" ? "base64" : "grok_url";
+}
+
+function retryCodesText(value: unknown): string {
+  const codes = parseConfigNumberList(value);
+  return (codes.length ? codes : [401, 429, 403]).join(",");
+}
+
+function proxyModeForConfig(settings: Awaited<ReturnType<typeof getSettings>>["grok"]): "direct" | "single_proxy" | "proxy_pool" {
+  if (String(settings.proxy_pool_url ?? "").trim()) return "proxy_pool";
+  if (String(settings.proxy_url ?? "").trim()) return "single_proxy";
+  return "direct";
+}
+
+function clearanceModeForConfig(settings: Awaited<ReturnType<typeof getSettings>>["grok"]): "none" | "manual" {
+  return String(settings.cf_cookies ?? settings.cf_clearance ?? "").trim() ? "manual" : "none";
+}
+
+function clearanceCookiesForConfig(settings: Awaited<ReturnType<typeof getSettings>>["grok"]): string {
+  const cookies = String(settings.cf_cookies ?? "").trim();
+  if (cookies) return cookies;
+  const clearance = String(settings.cf_clearance ?? "").trim();
+  return clearance ? `cf_clearance=${clearance}` : "";
+}
+
+async function legacyAdminConfigPayload(env: Env): Promise<Record<string, unknown>> {
   const settings = await getSettings(env);
   const filterTags = String(settings.grok.filtered_tags ?? "")
     .split(",")
@@ -467,7 +526,7 @@ async function adminConfigPayload(env: Env): Promise<Record<string, unknown>> {
     },
     grok: {
       temporary: Boolean(settings.grok.temporary),
-      stream: true,
+      stream: Boolean(settings.grok.stream),
       thinking: Boolean(settings.grok.show_thinking),
       dynamic_statsig: Boolean(settings.grok.dynamic_statsig),
       filter_tags: filterTags,
@@ -505,12 +564,138 @@ async function adminConfigPayload(env: Env): Promise<Record<string, unknown>> {
   };
 }
 
+async function adminConfigPayload(env: Env): Promise<Record<string, unknown>> {
+  const settings = await getSettings(env);
+  const refreshIntervalSec = Math.max(1, Math.round(Number(settings.token.refresh_interval_hours ?? 8) * 3600));
+  const totalTimeout = Number(settings.grok.stream_total_timeout ?? 600);
+  const chunkTimeout = Number(settings.grok.stream_chunk_timeout ?? 120);
+  const retryCodes = Array.isArray(settings.grok.retry_status_codes) ? settings.grok.retry_status_codes : [401, 429, 403];
+
+  return {
+    app: {
+      api_key: settings.grok.api_key ?? "",
+      app_key: settings.global.admin_password ?? "admin",
+      app_url: settings.global.base_url ?? "",
+      webui_enabled: Boolean(settings.global.webui_enabled),
+      webui_key: settings.global.webui_key ?? "",
+    },
+    logging: {
+      file_level: String(settings.global.log_level ?? "INFO").toUpperCase(),
+      max_files: 7,
+    },
+    features: {
+      temporary: Boolean(settings.grok.temporary),
+      memory: false,
+      stream: Boolean(settings.grok.stream),
+      thinking: Boolean(settings.grok.show_thinking),
+      auto_chat_mode_fallback: true,
+      thinking_summary: false,
+      dynamic_statsig: Boolean(settings.grok.dynamic_statsig),
+      enable_nsfw: false,
+      show_search_sources: false,
+      custom_instruction: "",
+      image_format: uiImageFormatFromLegacy(settings.global.image_mode),
+      imagine_public_image_proxy: Boolean(settings.grok.imagine_public_image_proxy),
+      video_format: "grok_url",
+    },
+    account: {
+      refresh: {
+        enabled: Boolean(settings.token.auto_refresh),
+        basic_interval_sec: refreshIntervalSec,
+        super_interval_sec: refreshIntervalSec,
+        heavy_interval_sec: refreshIntervalSec,
+        on_demand_min_interval_sec: Number(settings.token.reload_interval_sec ?? 30),
+        usage_concurrency: Number(settings.performance.usage_max_concurrent ?? 25),
+      },
+      selection: {
+        max_inflight: 1,
+      },
+    },
+    batch: {
+      nsfw_concurrency: Number(settings.performance.admin_assets_batch_size ?? 10),
+      refresh_concurrency: Number(settings.performance.usage_max_concurrent ?? 25),
+      asset_upload_concurrency: Number(settings.performance.assets_max_concurrent ?? 25),
+      asset_list_concurrency: Number(settings.performance.admin_assets_batch_size ?? 10),
+      asset_delete_concurrency: Number(settings.performance.assets_delete_batch_size ?? 10),
+    },
+    proxy: {
+      egress: {
+        mode: proxyModeForConfig(settings.grok),
+        proxy_url: String(settings.grok.proxy_url ?? ""),
+        resource_proxy_url: String(settings.grok.cache_proxy_url ?? ""),
+        proxy_pool: String(settings.grok.proxy_pool_url ?? ""),
+        resource_proxy_pool: "",
+        skip_ssl_verify: false,
+      },
+      clearance: {
+        mode: clearanceModeForConfig(settings.grok),
+        browser: "chrome136",
+        user_agent: String(settings.grok.user_agent ?? ""),
+        cf_cookies: clearanceCookiesForConfig(settings.grok),
+        flaresolverr_url: "",
+        timeout_sec: 60,
+        refresh_interval: 3600,
+      },
+    },
+    retry: {
+      max_retries: 3,
+      on_codes: retryCodesText(retryCodes),
+      reset_session_status_codes: retryCodesText(retryCodes),
+    },
+    chat: {
+      timeout: totalTimeout,
+    },
+    image: {
+      timeout: totalTimeout,
+      stream_timeout: chunkTimeout,
+    },
+    video: {
+      timeout: totalTimeout,
+    },
+    voice: {
+      timeout: totalTimeout,
+    },
+    nsfw: {
+      timeout: totalTimeout,
+    },
+    asset: {
+      upload_timeout: totalTimeout,
+      download_timeout: totalTimeout,
+      list_timeout: totalTimeout,
+      delete_timeout: totalTimeout,
+    },
+    cache: {
+      local: {
+        image_max_mb: Number(settings.global.image_cache_max_size_mb ?? 512),
+        video_max_mb: Number(settings.global.video_cache_max_size_mb ?? 1024),
+      },
+    },
+  };
+}
+
 async function saveAdminConfigPayload(env: Env, body: any): Promise<void> {
-  const appCfg = (body && typeof body === "object" ? body.app : null) as any;
-  const grokCfg = (body && typeof body === "object" ? body.grok : null) as any;
-  const tokenCfg = (body && typeof body === "object" ? body.token : null) as any;
-  const cacheCfg = (body && typeof body === "object" ? body.cache : null) as any;
-  const performanceCfg = (body && typeof body === "object" ? body.performance : null) as any;
+  const root = asConfigObject(body);
+  const appCfg = asConfigObject(root?.app);
+  const grokCfg = asConfigObject(root?.grok);
+  const tokenCfg = asConfigObject(root?.token);
+  const cacheCfg = asConfigObject(root?.cache);
+  const performanceCfg = asConfigObject(root?.performance);
+  const loggingCfg = asConfigObject(root?.logging);
+  const featuresCfg = asConfigObject(root?.features);
+  const accountCfg = asConfigObject(root?.account);
+  const accountRefreshCfg = asConfigObject(accountCfg?.refresh);
+  const batchCfg = asConfigObject(root?.batch);
+  const proxyCfg = asConfigObject(root?.proxy);
+  const proxyEgressCfg = asConfigObject(proxyCfg?.egress);
+  const proxyClearanceCfg = asConfigObject(proxyCfg?.clearance);
+  const retryCfg = asConfigObject(root?.retry);
+  const chatCfg = asConfigObject(root?.chat);
+  const imageCfg = asConfigObject(root?.image);
+  const videoCfg = asConfigObject(root?.video);
+  const voiceCfg = asConfigObject(root?.voice);
+  const nsfwCfg = asConfigObject(root?.nsfw);
+  const assetCfg = asConfigObject(root?.asset);
+  const cacheLocalCfg = asConfigObject(cacheCfg?.local);
 
   const global_config: any = {};
   const grok_config: any = {};
@@ -525,9 +710,13 @@ async function saveAdminConfigPayload(env: Env, body: any): Promise<void> {
     if (typeof appCfg.app_url === "string") global_config.base_url = appCfg.app_url.trim();
     if (typeof appCfg.webui_enabled === "boolean") global_config.webui_enabled = appCfg.webui_enabled;
     if (typeof appCfg.webui_key === "string") global_config.webui_key = appCfg.webui_key.trim();
-    if (appCfg.image_format === "url" || appCfg.image_format === "base64" || appCfg.image_format === "b64_json") {
-      global_config.image_mode = appCfg.image_format;
-    }
+    const imageMode = legacyImageModeFromUi(appCfg.image_format);
+    if (imageMode) global_config.image_mode = imageMode;
+  }
+
+  if (loggingCfg && typeof loggingCfg.file_level === "string") {
+    const level = loggingCfg.file_level.trim().toUpperCase();
+    if (["DEBUG", "INFO", "WARNING", "ERROR"].includes(level)) global_config.log_level = level;
   }
 
   if (grokCfg && typeof grokCfg === "object") {
@@ -542,6 +731,7 @@ async function saveAdminConfigPayload(env: Env, body: any): Promise<void> {
       grok_config.filtered_tags = grokCfg.filter_tags.map((x: any) => String(x ?? "").trim()).filter(Boolean).join(",");
     }
     if (typeof grokCfg.dynamic_statsig === "boolean") grok_config.dynamic_statsig = grokCfg.dynamic_statsig;
+    if (typeof grokCfg.stream === "boolean") grok_config.stream = grokCfg.stream;
     if (typeof grokCfg.thinking === "boolean") grok_config.show_thinking = grokCfg.thinking;
     if (typeof grokCfg.temporary === "boolean") grok_config.temporary = grokCfg.temporary;
     if (typeof grokCfg.video_poster_preview === "boolean") grok_config.video_poster_preview = grokCfg.video_poster_preview;
@@ -555,6 +745,18 @@ async function saveAdminConfigPayload(env: Env, body: any): Promise<void> {
     if (typeof grokCfg.image_generation_method === "string" && grokCfg.image_generation_method.trim()) {
       grok_config.image_generation_method = normalizeImageGenerationMethod(grokCfg.image_generation_method);
     }
+  }
+
+  if (featuresCfg && typeof featuresCfg === "object") {
+    if (typeof featuresCfg.temporary === "boolean") grok_config.temporary = featuresCfg.temporary;
+    if (typeof featuresCfg.stream === "boolean") grok_config.stream = featuresCfg.stream;
+    if (typeof featuresCfg.thinking === "boolean") grok_config.show_thinking = featuresCfg.thinking;
+    if (typeof featuresCfg.dynamic_statsig === "boolean") grok_config.dynamic_statsig = featuresCfg.dynamic_statsig;
+    if (typeof featuresCfg.imagine_public_image_proxy === "boolean") {
+      grok_config.imagine_public_image_proxy = featuresCfg.imagine_public_image_proxy;
+    }
+    const imageMode = legacyImageModeFromUi(featuresCfg.image_format);
+    if (imageMode) global_config.image_mode = imageMode;
   }
 
   if (tokenCfg && typeof tokenCfg === "object") {
@@ -573,10 +775,89 @@ async function saveAdminConfigPayload(env: Env, body: any): Promise<void> {
     }
   }
 
+  if (accountRefreshCfg && typeof accountRefreshCfg === "object") {
+    if (typeof accountRefreshCfg.enabled === "boolean") token_config.auto_refresh = accountRefreshCfg.enabled;
+    const intervalSec = configPositiveInt(accountRefreshCfg.basic_interval_sec);
+    if (intervalSec !== null) token_config.refresh_interval_hours = Math.max(1, Math.round(intervalSec / 3600));
+    const onDemandSec = configPositiveInt(accountRefreshCfg.on_demand_min_interval_sec, 0);
+    if (onDemandSec !== null) token_config.reload_interval_sec = onDemandSec;
+    const usageConcurrency = configPositiveInt(accountRefreshCfg.usage_concurrency);
+    if (usageConcurrency !== null) performance_config.usage_max_concurrent = usageConcurrency;
+  }
+
+  if (batchCfg && typeof batchCfg === "object") {
+    const nsfwConcurrency = configPositiveInt(batchCfg.nsfw_concurrency);
+    if (nsfwConcurrency !== null) performance_config.admin_assets_batch_size = nsfwConcurrency;
+    const refreshConcurrency = configPositiveInt(batchCfg.refresh_concurrency);
+    if (refreshConcurrency !== null) performance_config.usage_max_concurrent = refreshConcurrency;
+    const assetUploadConcurrency = configPositiveInt(batchCfg.asset_upload_concurrency);
+    if (assetUploadConcurrency !== null) performance_config.assets_max_concurrent = assetUploadConcurrency;
+    const assetListConcurrency = configPositiveInt(batchCfg.asset_list_concurrency);
+    if (assetListConcurrency !== null) performance_config.admin_assets_batch_size = assetListConcurrency;
+    const assetDeleteConcurrency = configPositiveInt(batchCfg.asset_delete_concurrency);
+    if (assetDeleteConcurrency !== null) performance_config.assets_delete_batch_size = assetDeleteConcurrency;
+  }
+
+  if (proxyEgressCfg && typeof proxyEgressCfg === "object") {
+    const mode = String(proxyEgressCfg.mode ?? "").trim();
+    if (mode === "direct") {
+      grok_config.proxy_url = "";
+      grok_config.proxy_pool_url = "";
+    } else if (mode === "single_proxy") {
+      grok_config.proxy_pool_url = "";
+    } else if (mode === "proxy_pool") {
+      grok_config.proxy_url = "";
+    }
+    if (typeof proxyEgressCfg.proxy_url === "string") grok_config.proxy_url = proxyEgressCfg.proxy_url.trim();
+    if (typeof proxyEgressCfg.resource_proxy_url === "string") grok_config.cache_proxy_url = proxyEgressCfg.resource_proxy_url.trim();
+    if (typeof proxyEgressCfg.proxy_pool === "string") grok_config.proxy_pool_url = proxyEgressCfg.proxy_pool.trim();
+  }
+
+  if (proxyClearanceCfg && typeof proxyClearanceCfg === "object") {
+    if (proxyClearanceCfg.mode === "none") {
+      grok_config.cf_clearance = "";
+      grok_config.cf_cookies = "";
+    }
+    if (typeof proxyClearanceCfg.user_agent === "string") grok_config.user_agent = proxyClearanceCfg.user_agent.trim();
+    if (typeof proxyClearanceCfg.cf_cookies === "string") grok_config.cf_cookies = proxyClearanceCfg.cf_cookies.trim();
+  }
+
+  if (retryCfg && typeof retryCfg === "object") {
+    if (retryCfg.on_codes !== undefined) {
+      const codes = parseConfigNumberList(retryCfg.on_codes);
+      if (codes.length) grok_config.retry_status_codes = codes;
+    }
+  }
+
+  const timeoutCandidates = [
+    chatCfg?.timeout,
+    imageCfg?.timeout,
+    videoCfg?.timeout,
+    voiceCfg?.timeout,
+    nsfwCfg?.timeout,
+    assetCfg?.upload_timeout,
+    assetCfg?.download_timeout,
+    assetCfg?.list_timeout,
+    assetCfg?.delete_timeout,
+  ];
+  for (const value of timeoutCandidates) {
+    const n = configPositiveInt(value);
+    if (n !== null) grok_config.stream_total_timeout = n;
+  }
+  const imageStreamTimeout = configPositiveInt(imageCfg?.stream_timeout);
+  if (imageStreamTimeout !== null) grok_config.stream_chunk_timeout = imageStreamTimeout;
+
   if (cacheCfg && typeof cacheCfg === "object") {
     if (typeof cacheCfg.enable_auto_clean === "boolean") cache_config.enable_auto_clean = cacheCfg.enable_auto_clean;
     if (Number.isFinite(Number(cacheCfg.limit_mb))) cache_config.limit_mb = Math.max(1, Math.floor(Number(cacheCfg.limit_mb)));
     if (typeof cacheCfg.keep_base64_cache === "boolean") cache_config.keep_base64_cache = cacheCfg.keep_base64_cache;
+  }
+
+  if (cacheLocalCfg && typeof cacheLocalCfg === "object") {
+    const imageMax = configPositiveInt(cacheLocalCfg.image_max_mb, 0);
+    if (imageMax !== null) global_config.image_cache_max_size_mb = imageMax;
+    const videoMax = configPositiveInt(cacheLocalCfg.video_max_mb, 0);
+    if (videoMax !== null) global_config.video_cache_max_size_mb = videoMax;
   }
 
   if (performanceCfg && typeof performanceCfg === "object") {
@@ -764,7 +1045,7 @@ adminRoutes.post("/webui/api/voice/token", async (c) => {
 
 adminRoutes.get("/api/v1/admin/config", requireAdminAuth, async (c) => {
   try {
-    return c.json(await adminConfigPayload(c.env));
+    return c.json(await legacyAdminConfigPayload(c.env));
   } catch (e) {
     return c.json(legacyErr(`Get config failed: ${e instanceof Error ? e.message : String(e)}`), 500);
   }

@@ -392,6 +392,9 @@ try {
     assert.equal(upstreamConfigAliasResp.status, 200);
     const upstreamConfigAlias = await upstreamConfigAliasResp.json();
     assert.equal(upstreamConfigAlias.app.webui_enabled, true);
+    assert.equal(upstreamConfigAlias.features.thinking, true);
+    assert.equal(upstreamConfigAlias.features.stream, false);
+    assert.equal(upstreamConfigAlias.retry.on_codes, "401,429,403");
 
     const modelsResp = await app.default.fetch(new Request("https://worker.example/webui/api/models"), env, ctx);
     assert.equal(modelsResp.status, 200);
@@ -408,6 +411,63 @@ try {
     assert.equal(configBefore.grok.imagine_public_image_proxy, false);
     assert.equal(configBefore.app.webui_enabled, true);
     assert.equal(configBefore.app.webui_key, "");
+
+    const newConfigUpdateResp = await app.default.fetch(
+      new Request("https://worker.example/admin/api/config?app_key=admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          features: {
+            thinking: false,
+            temporary: false,
+            stream: true,
+            dynamic_statsig: true,
+            image_format: "base64",
+            imagine_public_image_proxy: true,
+          },
+          logging: { file_level: "DEBUG" },
+          retry: { on_codes: "403,429" },
+          chat: { timeout: 321 },
+          image: { stream_timeout: 77 },
+          account: { refresh: { enabled: false, basic_interval_sec: 7200, on_demand_min_interval_sec: 55, usage_concurrency: 12 } },
+          batch: { asset_delete_concurrency: 13 },
+          cache: { local: { image_max_mb: 333, video_max_mb: 444 } },
+        }),
+      }),
+      env,
+      ctx,
+    );
+    assert.equal(newConfigUpdateResp.status, 200);
+    const savedGrok = JSON.parse(DB.state.settings.get("grok"));
+    assert.equal(savedGrok.show_thinking, false);
+    assert.equal(savedGrok.temporary, false);
+    assert.equal(savedGrok.stream, true);
+    assert.equal(savedGrok.dynamic_statsig, true);
+    assert.equal(savedGrok.imagine_public_image_proxy, true);
+    assert.deepEqual(savedGrok.retry_status_codes, [403, 429]);
+    assert.equal(savedGrok.stream_total_timeout, 321);
+    assert.equal(savedGrok.stream_chunk_timeout, 77);
+    const savedGlobal = JSON.parse(DB.state.settings.get("global"));
+    assert.equal(savedGlobal.image_mode, "base64");
+    assert.equal(savedGlobal.log_level, "DEBUG");
+    assert.equal(savedGlobal.image_cache_max_size_mb, 333);
+    assert.equal(savedGlobal.video_cache_max_size_mb, 444);
+    const savedToken = JSON.parse(DB.state.settings.get("token"));
+    assert.equal(savedToken.auto_refresh, false);
+    assert.equal(savedToken.refresh_interval_hours, 2);
+    assert.equal(savedToken.reload_interval_sec, 55);
+    const savedPerformance = JSON.parse(DB.state.settings.get("performance"));
+    assert.equal(savedPerformance.usage_max_concurrent, 12);
+    assert.equal(savedPerformance.assets_delete_batch_size, 13);
+
+    const newConfigAfterResp = await app.default.fetch(new Request("https://worker.example/admin/api/config?app_key=admin"), env, ctx);
+    assert.equal(newConfigAfterResp.status, 200);
+    const newConfigAfter = await newConfigAfterResp.json();
+    assert.equal(newConfigAfter.features.thinking, false);
+    assert.equal(newConfigAfter.features.temporary, false);
+    assert.equal(newConfigAfter.features.stream, true);
+    assert.equal(newConfigAfter.features.image_format, "base64");
+    assert.equal(newConfigAfter.retry.on_codes, "403,429");
 
     const configUpdateResp = await app.default.fetch(
       new Request("https://worker.example/api/v1/admin/config", {

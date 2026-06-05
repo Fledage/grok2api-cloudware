@@ -39,6 +39,13 @@ function makeResult(results) {
   return { results };
 }
 
+const adminHeaderHtml = readFileSync(join(rootPath, "app/static/admin/header.html"), "utf8");
+const adminHeaderJs = readFileSync(join(rootPath, "app/static/js/admin-header.js"), "utf8");
+for (const href of ["/admin/token", "/admin/keys", "/admin/chat", "/admin/datacenter", "/admin/config", "/admin/cache"]) {
+  assert.ok(adminHeaderHtml.includes(`href="${href}"`), `admin header should link ${href}`);
+  assert.ok(adminHeaderJs.includes(`href="${href}"`), `admin header fallback should link ${href}`);
+}
+
 const fetchCalls = [];
 const originalFetch = globalThis.fetch;
 

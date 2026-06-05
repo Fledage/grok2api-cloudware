@@ -129,6 +129,10 @@
   },
   "header": {
     "account": "アカウント管理",
+    "token": "Token 管理",
+    "keys": "API Key 管理",
+    "chat": "オンラインチャット",
+    "datacenter": "データセンター",
     "config": "構成管理",
     "cache": "キャッシュ管理",
     "languageLabel": "言語",
