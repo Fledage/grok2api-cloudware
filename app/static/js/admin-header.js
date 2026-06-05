@@ -12,6 +12,14 @@ window.renderAdminHeader = async function renderAdminHeader() {
   })();
   const HEADER_HTML_CACHE_KEY = `grok2api.admin_header_html.${scriptVersion}`;
   const META_VERSION_CACHE_KEY = `grok2api.meta_version.${scriptVersion}`;
+  const requiredAdminNavHrefs = [
+    '/admin/token',
+    '/admin/keys',
+    '/admin/chat',
+    '/admin/datacenter',
+    '/admin/config',
+    '/admin/cache',
+  ];
   let appVersion = '';
   let updateInfo = null;
   let updateStatus = 'idle';
@@ -30,6 +38,11 @@ window.renderAdminHeader = async function renderAdminHeader() {
     try {
       sessionStorage.setItem(key, value);
     } catch {}
+  };
+
+  const hasCurrentAdminNav = (html) => {
+    const value = String(html || '');
+    return requiredAdminNavHrefs.every((href) => value.includes(`href="${href}"`) || value.includes(`href='${href}'`));
   };
 
   const languageCodes = {
@@ -564,7 +577,7 @@ window.renderAdminHeader = async function renderAdminHeader() {
 
   try {
     const cachedHtml = window.__grok2apiAdminHeaderHtml || readSessionCache(HEADER_HTML_CACHE_KEY);
-    if (cachedHtml) {
+    if (cachedHtml && hasCurrentAdminNav(cachedHtml)) {
       mount.innerHTML = cachedHtml;
     } else {
       const res = await fetch('/static/admin/header.html');
