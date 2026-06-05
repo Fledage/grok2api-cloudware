@@ -57,6 +57,7 @@ try {
   patchRelativeImports(outDir);
 
   const conversation = await import(pathToFileURL(join(outDir, "src/grok/conversation.js")));
+  const assets = await import(pathToFileURL(join(outDir, "src/grok/assets.js")));
   const imageCards = await import(pathToFileURL(join(outDir, "src/grok/imageCards.js")));
   const imagine = await import(pathToFileURL(join(outDir, "src/grok/imagineExperimental.js")));
   const models = await import(pathToFileURL(join(outDir, "src/grok/models.js")));
@@ -77,6 +78,44 @@ try {
   assert.equal(
     models.isModelAvailableForPools("grok-imagine-image", { basic: false, super: true, heavy: false }),
     true,
+  );
+  assert.deepEqual(
+    assets.normalizeAssetItems([
+      {
+        id: "asset_1",
+        fileName: "cat.png",
+        filePath: "/users/u/asset_1/content",
+        contentType: "image/png",
+        fileSize: 1234,
+        createdAt: "2026-06-05T01:00:00Z",
+      },
+      {
+        assetId: "asset_2",
+        name: "video.mp4",
+        file_path: "/users/u/asset_2/content",
+        content_type: "video/mp4",
+        size: "42",
+        created_at: "2026-06-05T02:00:00Z",
+      },
+    ]),
+    [
+      {
+        id: "asset_1",
+        name: "cat.png",
+        file_path: "/users/u/asset_1/content",
+        content_type: "image/png",
+        size: 1234,
+        created_at: "2026-06-05T01:00:00Z",
+      },
+      {
+        id: "asset_2",
+        name: "video.mp4",
+        file_path: "/users/u/asset_2/content",
+        content_type: "video/mp4",
+        size: 42,
+        created_at: "2026-06-05T02:00:00Z",
+      },
+    ],
   );
   assert.equal(
     models.isModelAvailableForPools("grok-4.20-heavy", { basic: false, super: true, heavy: false }),

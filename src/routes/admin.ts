@@ -36,6 +36,7 @@ import {
   updateTokenLimits,
 } from "../repo/tokens";
 import { generateImagineWs, resolveAspectRatio } from "../grok/imagineExperimental";
+import { deleteAsset, listAssets, type NormalizedAssetItem } from "../grok/assets";
 import { checkRateLimits } from "../grok/rateLimits";
 import { addRequestLog, clearRequestLogs, getRequestLogs, getRequestStats } from "../repo/logs";
 import { getRefreshProgress, setRefreshProgress } from "../repo/refreshProgress";
@@ -137,8 +138,8 @@ function wsSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function parseImagineWsFailureStatus(message: string): number {
-  const matched = message.match(/Imagine websocket connect failed:\s*(\d{3})\b/i);
+function parseUpstreamStatusFromMessage(message: string): number {
+  const matched = message.match(/(?:Imagine websocket connect failed:|Upstream)\s*(\d{3})\b/i);
   if (matched) {
     const status = Number(matched[1]);
     if (Number.isFinite(status) && status >= 100 && status <= 599) return status;
@@ -188,6 +189,115 @@ function poolToTokenType(pool: string): "sso" | "ssoSuper" | null {
   if (pool === "ssoSuper") return "ssoSuper";
   if (pool === "ssoBasic") return "sso";
   return null;
+}
+
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(Math.floor(limit || 1), items.length || 1));
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const idx = nextIndex++;
+      if (idx >= items.length) break;
+      results[idx] = await fn(items[idx] as T);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+function maskToken(token: string): string {
+  const value = String(token || "").trim();
+  return value.length > 20 ? `${value.slice(0, 8)}...${value.slice(-8)}` : value;
+}
+
+function isTokenManageable(row: { status: string; failed_count: number; cooldown_until: number | null }): boolean {
+  if (row.status !== "active") return false;
+  if (row.failed_count >= 3) return false;
+  return !(row.cooldown_until && row.cooldown_until > nowMs());
+}
+
+function resolveOnlineAssetTokens(
+  allTokens: Awaited<ReturnType<typeof listTokens>>,
+  query: { token?: string; tokens?: string; scope?: string },
+) {
+  const manageable = allTokens.filter(isTokenManageable);
+  const byToken = new Map(manageable.map((row) => [row.token, row]));
+  const accounts = manageable.map((row) => ({
+    token: row.token,
+    token_masked: maskToken(row.token),
+    pool: toPoolName(row.token_type),
+    last_asset_clear_at: null,
+  }));
+
+  const requestedToken = String(query.token ?? "").trim();
+  if (requestedToken && byToken.has(requestedToken)) {
+    return { accounts, scope: "single", selected: [byToken.get(requestedToken)!] };
+  }
+
+  const requestedTokens = String(query.tokens ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((token) => byToken.get(token))
+    .filter((row): row is NonNullable<typeof row> => Boolean(row));
+  if (requestedTokens.length) return { accounts, scope: "selected", selected: requestedTokens };
+
+  if (String(query.scope ?? "").trim().toLowerCase() === "all") {
+    return { accounts, scope: "all", selected: manageable };
+  }
+
+  return { accounts, scope: "none", selected: [] };
+}
+
+async function getOnlineAssetDetail(args: {
+  token: string;
+  tokenType: "sso" | "ssoSuper";
+  settings: Awaited<ReturnType<typeof getSettings>>;
+  env: Env;
+}): Promise<{
+  token: string;
+  token_masked: string;
+  pool: "ssoBasic" | "ssoSuper";
+  count: number;
+  status: string;
+  last_asset_clear_at: null;
+  assets: NormalizedAssetItem[];
+  error?: string;
+}> {
+  try {
+    const assets = await listAssets({
+      cookie: buildSsoCookie(args.token, args.settings.grok),
+      settings: args.settings.grok,
+    });
+    return {
+      token: args.token,
+      token_masked: maskToken(args.token),
+      pool: toPoolName(args.tokenType),
+      count: assets.length,
+      status: "ok",
+      last_asset_clear_at: null,
+      assets,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    await recordTokenFailure(args.env.DB, args.token, parseUpstreamStatusFromMessage(msg), msg.slice(0, 200));
+    await applyCooldown(args.env.DB, args.token, parseUpstreamStatusFromMessage(msg));
+    return {
+      token: args.token,
+      token_masked: maskToken(args.token),
+      pool: toPoolName(args.tokenType),
+      count: 0,
+      status: "error",
+      last_asset_clear_at: null,
+      assets: [],
+      error: msg,
+    };
+  }
 }
 
 async function getKvStats(db: Env["DB"]): Promise<{
@@ -516,7 +626,7 @@ adminRoutes.get("/api/v1/admin/imagine/ws", async (c) => {
           if (socketClosed || localToken !== runToken) break;
           const message = e instanceof Error ? e.message : String(e);
           if (chosen?.token) {
-            const status = parseImagineWsFailureStatus(message);
+            const status = parseUpstreamStatusFromMessage(message);
             const trimmed = message.slice(0, 200);
             try {
               await recordTokenFailure(c.env.DB, chosen.token, status, trimmed);
@@ -788,13 +898,48 @@ adminRoutes.get("/api/v1/admin/cache/local", requireAdminAuth, async (c) => {
 adminRoutes.get("/api/v1/admin/cache", requireAdminAuth, async (c) => {
   try {
     const stats = await getKvStats(c.env.DB);
+    const settings = await getSettings(c.env);
+    const allTokens = await listTokens(c.env.DB);
+    const query: { token?: string; tokens?: string; scope?: string } = {};
+    const tokenQuery = c.req.query("token");
+    const tokensQuery = c.req.query("tokens");
+    const scopeQuery = c.req.query("scope");
+    if (tokenQuery !== undefined) query.token = tokenQuery;
+    if (tokensQuery !== undefined) query.tokens = tokensQuery;
+    if (scopeQuery !== undefined) query.scope = scopeQuery;
+    const resolved = resolveOnlineAssetTokens(allTokens, query);
+    const limit = Math.max(1, Math.min(50, Math.floor(settings.performance.admin_assets_batch_size || 10)));
+    const details = await mapLimit(resolved.selected, limit, (row) =>
+      getOnlineAssetDetail({
+        token: row.token,
+        tokenType: row.token_type,
+        settings,
+        env: c.env,
+      }),
+    );
+    const total = details.reduce((sum, item) => sum + item.count, 0);
+    const first = details[0];
+    const status =
+      details.length === 0
+        ? resolved.accounts.length
+          ? "not_loaded"
+          : "no_token"
+        : details.some((item) => item.status === "ok")
+          ? "ok"
+          : "error";
+
     return c.json({
       local_image: stats.image,
       local_video: stats.video,
-      online: { count: 0, status: "not_loaded", token: null, last_asset_clear_at: null },
-      online_accounts: [],
-      online_scope: "none",
-      online_details: [],
+      online: {
+        count: total,
+        status,
+        token: first?.token ?? null,
+        last_asset_clear_at: first?.last_asset_clear_at ?? null,
+      },
+      online_accounts: resolved.accounts,
+      online_scope: resolved.scope,
+      online_details: details,
     });
   } catch (e) {
     return c.json(legacyErr(`Get cache failed: ${e instanceof Error ? e.message : String(e)}`), 500);
@@ -855,7 +1000,71 @@ adminRoutes.post("/api/v1/admin/cache/item/delete", requireAdminAuth, async (c) 
 });
 
 adminRoutes.post("/api/v1/admin/cache/online/clear", requireAdminAuth, async (c) => {
-  return c.json(legacyErr("Online assets clear is not supported on Cloudflare Workers"), 501);
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as { token?: string; tokens?: string[] };
+    const settings = await getSettings(c.env);
+    const allTokens = await listTokens(c.env.DB);
+    const requested = Array.isArray(body.tokens)
+      ? body.tokens.map((item) => String(item || "").trim()).filter(Boolean)
+      : String(body.token || "").trim()
+        ? [String(body.token || "").trim()]
+        : [];
+    if (!requested.length) return c.json(legacyErr("Missing token"), 400);
+
+    const tokenMap = new Map(allTokens.filter(isTokenManageable).map((row) => [row.token, row]));
+    const selected = requested
+      .map((token) => tokenMap.get(token))
+      .filter((row): row is NonNullable<typeof row> => Boolean(row));
+    if (!selected.length) return c.json(legacyErr("No manageable token selected"), 400);
+
+    const listLimit = Math.max(1, Math.min(50, Math.floor(settings.performance.admin_assets_batch_size || 10)));
+    const deleteLimit = Math.max(1, Math.min(50, Math.floor(settings.performance.assets_delete_batch_size || 10)));
+    const rows = await mapLimit(selected, listLimit, async (row) => {
+      const cookie = buildSsoCookie(row.token, settings.grok);
+      try {
+        const assets = await listAssets({ cookie, settings: settings.grok });
+        let deleted = 0;
+        const errors: string[] = [];
+        await mapLimit(assets, deleteLimit, async (asset) => {
+          try {
+            await deleteAsset({ assetId: asset.id, cookie, settings: settings.grok });
+            deleted += 1;
+          } catch (e) {
+            errors.push(e instanceof Error ? e.message : String(e));
+          }
+        });
+        return {
+          token: row.token,
+          token_masked: maskToken(row.token),
+          pool: toPoolName(row.token_type),
+          deleted,
+          total: assets.length,
+          status: errors.length ? "error" : "success",
+          error: errors[0] ?? "",
+          last_asset_clear_at: nowMs(),
+        };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const status = parseUpstreamStatusFromMessage(msg);
+        await recordTokenFailure(c.env.DB, row.token, status, msg.slice(0, 200));
+        await applyCooldown(c.env.DB, row.token, status);
+        return {
+          token: row.token,
+          token_masked: maskToken(row.token),
+          pool: toPoolName(row.token_type),
+          deleted: 0,
+          total: 0,
+          status: "error",
+          error: msg,
+          last_asset_clear_at: null,
+        };
+      }
+    });
+    const deleted = rows.reduce((sum, row) => sum + row.deleted, 0);
+    return c.json(legacyOk({ result: { deleted, rows } }));
+  } catch (e) {
+    return c.json(legacyErr(`Clear online assets failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
 });
 
 adminRoutes.get("/api/v1/admin/metrics", requireAdminAuth, async (c) => {
