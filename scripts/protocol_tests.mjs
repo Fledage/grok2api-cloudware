@@ -62,6 +62,7 @@ try {
   const imagine = await import(pathToFileURL(join(outDir, "src/grok/imagineExperimental.js")));
   const mediaUrls = await import(pathToFileURL(join(outDir, "src/grok/mediaUrls.js")));
   const models = await import(pathToFileURL(join(outDir, "src/grok/models.js")));
+  const nsfw = await import(pathToFileURL(join(outDir, "src/grok/nsfw.js")));
   const videoApi = await import(pathToFileURL(join(outDir, "src/grok/video.js")));
 
   assert.equal(
@@ -156,6 +157,36 @@ try {
     models.isModelAvailableForPools("grok-4.20-auto", { basic: false, super: false, heavy: true }),
     true,
   );
+
+  assert.deepEqual([...nsfw.buildAcceptTosPayload()], [0, 0, 0, 0, 2, 16, 1]);
+  assert.deepEqual(
+    [...nsfw.encodeGrpcWebFrame(new Uint8Array([1, 2, 3]))],
+    [0, 0, 0, 0, 3, 1, 2, 3],
+  );
+  const enabledPayload = [...nsfw.buildNsfwMgmtPayload(true)];
+  const disabledPayload = [...nsfw.buildNsfwMgmtPayload(false)];
+  assert.equal(enabledPayload[0], 0);
+  assert.equal(enabledPayload[4], 32);
+  assert.equal(enabledPayload[8], 1);
+  assert.equal(disabledPayload[8], 0);
+  assert.equal(enabledPayload[9], 18);
+  assert.equal(enabledPayload[10], 26);
+  assert.equal(enabledPayload[11], 10);
+  assert.equal(enabledPayload[12], 24);
+  assert.equal(new TextDecoder().decode(nsfw.buildNsfwMgmtPayload(true).slice(13)), "always_show_nsfw_content");
+  const trailerOnly = new Uint8Array([
+    128, 0, 0, 0, 15, 103, 114, 112, 99, 45, 115, 116, 97, 116, 117, 115, 58, 48, 13, 10,
+  ]);
+  assert.equal(nsfw.parseGrpcWebResponse(trailerOnly).status.code, 0);
+  assert.equal(nsfw.parseGrpcWebResponse(new Uint8Array([])).status.code, -1);
+  const headerStatus = nsfw.parseGrpcWebResponse(new Uint8Array([]), "", {
+    "grpc-status": "7",
+    "grpc-message": "permission%20denied",
+  }).status;
+  assert.equal(headerStatus.code, 7);
+  assert.equal(headerStatus.httpStatus, 403);
+  assert.equal(headerStatus.message, "permission denied");
+  assert.match(nsfw.buildSetBirthPayload(new Date("2026-06-05T00:00:00Z")).birthDate, /^\d{4}-\d{2}-\d{2}T/);
 
   const video = conversation.buildConversationPayload({
     requestModel: "grok-imagine-video",

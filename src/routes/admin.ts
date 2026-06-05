@@ -41,6 +41,7 @@ import {
 import { generateImagineWs, resolveAspectRatio } from "../grok/imagineExperimental";
 import { deleteAsset, listAssets, type NormalizedAssetItem } from "../grok/assets";
 import { fetchLivekitToken } from "../grok/livekit";
+import { runNsfwSequence } from "../grok/nsfw";
 import { checkRateLimits } from "../grok/rateLimits";
 import { addRequestLog, clearRequestLogs, getRequestLogs, getRequestStats } from "../repo/logs";
 import { getRefreshProgress, setRefreshProgress } from "../repo/refreshProgress";
@@ -236,6 +237,22 @@ function quotaBrief(row: TokenRow): Record<string, { remaining: number; total: n
   };
 }
 
+function parseTokenTags(row: Pick<TokenRow, "tags">): string[] {
+  try {
+    const parsed = JSON.parse(row.tags || "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function withTokenTag(row: TokenRow, tag: string, enabled: boolean): string[] {
+  const tags = new Set(parseTokenTags(row).map((item) => item.trim()).filter(Boolean));
+  if (enabled) tags.add(tag);
+  else tags.delete(tag);
+  return [...tags];
+}
+
 function serializeUpstreamToken(row: TokenRow): Record<string, unknown> {
   const disabled = row.status === "disabled";
   const status = disabled ? "disabled" : row.status === "expired" ? "invalid" : "active";
@@ -246,14 +263,7 @@ function serializeUpstreamToken(row: TokenRow): Record<string, unknown> {
     quota: quotaBrief(row),
     use_count: 0,
     last_used_at: null,
-    tags: (() => {
-      try {
-        const parsed = JSON.parse(row.tags || "[]");
-        return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
-      } catch {
-        return [];
-      }
-    })(),
+    tags: parseTokenTags(row),
   };
 }
 
@@ -416,6 +426,21 @@ async function clearOnlineAssetsForToken(args: {
   });
   if (errors.length) throw new Error(errors[0]);
   return { deleted };
+}
+
+async function refreshNsfwForToken(args: {
+  env: Env;
+  row: TokenRow;
+  settings: Awaited<ReturnType<typeof getSettings>>;
+  enabled: boolean;
+}): Promise<{ success: true; tagged: boolean; steps: Record<string, true> }> {
+  const result = await runNsfwSequence({
+    token: args.row.token,
+    settings: args.settings.grok,
+    enabled: args.enabled,
+  });
+  await updateTokenTags(args.env.DB, args.row.token, args.row.token_type, withTokenTag(args.row, "nsfw", args.enabled));
+  return { success: true, tagged: result.tagged, steps: result.steps };
 }
 
 async function batchTokenRows(env: Env, requested: string[] = []): Promise<TokenRow[]> {
@@ -1233,12 +1258,34 @@ adminRoutes.put("/admin/api/tokens/pool", requireAdminAuth, async (c) => {
 });
 
 adminRoutes.post("/api/v1/admin/tokens/nsfw/refresh", requireAdminAuth, async (c) => {
-  const rows = await listTokens(c.env.DB);
+  const body = (await c.req.json().catch(() => ({}))) as { tokens?: string[]; all?: boolean };
+  const requested = Array.isArray(body.tokens) ? body.tokens : [];
+  const rows = await batchTokenRows(c.env, requested);
+  if (!rows.length) return c.json(legacyErr(requested.length ? "No matching tokens found" : "No tokens available"), 400);
+  const settings = await getSettings(c.env);
+  const concurrency = Math.max(1, Math.min(50, Number(c.req.query("concurrency") ?? settings.performance.usage_max_concurrent ?? 10)));
+  const result = await runTokenBatch({
+    rows,
+    concurrency,
+    handler: (row) => refreshNsfwForToken({ env: c.env, row, settings, enabled: true }),
+  });
+  for (const row of rows) {
+    const item = result.results[maskUpstreamToken(row.token)] as { error?: string } | undefined;
+    if (!item?.error) continue;
+    const status = parseUpstreamStatusFromMessage(item.error);
+    await recordTokenFailure(c.env.DB, row.token, status, item.error.slice(0, 200));
+    await applyCooldown(c.env.DB, row.token, status);
+  }
   return c.json({
     status: "success",
-    supported: false,
-    message: "Cloudflare Workers 版本暂未实现上游 NSFW gRPC-Web 刷新序列。",
-    summary: { total: rows.filter(isTokenManageable).length, success: 0, failed: 0, invalidated: 0 },
+    supported: true,
+    summary: {
+      total: result.summary.total,
+      success: result.summary.ok,
+      failed: result.summary.fail,
+      invalidated: 0,
+    },
+    results: result.results,
   });
 });
 
@@ -1587,13 +1634,23 @@ adminRoutes.post("/admin/api/batch/nsfw", requireAdminAuth, async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { tokens?: string[] };
   const requested = Array.isArray(body.tokens) ? body.tokens : [];
   const rows = await batchTokenRows(c.env, requested);
-  return c.json({
-    status: "success",
-    supported: false,
-    message: "Cloudflare Workers 版本暂未实现上游 NSFW gRPC-Web 刷新序列。",
-    summary: { total: rows.length, ok: 0, fail: rows.length },
-    results: Object.fromEntries(rows.map((row) => [maskUpstreamToken(row.token), { error: "unsupported_on_workers" }])),
+  if (!rows.length) return c.json(legacyErr(requested.length ? "No matching tokens found" : "No tokens available"), 400);
+  const settings = await getSettings(c.env);
+  const enabled = String(c.req.query("enabled") ?? "true").trim().toLowerCase() !== "false";
+  const concurrency = Math.max(1, Math.min(50, Number(c.req.query("concurrency") ?? settings.performance.usage_max_concurrent ?? 10)));
+  const result = await runTokenBatch({
+    rows,
+    concurrency,
+    handler: (row) => refreshNsfwForToken({ env: c.env, row, settings, enabled }),
   });
+  for (const row of rows) {
+    const item = result.results[maskUpstreamToken(row.token)] as { error?: string } | undefined;
+    if (!item?.error) continue;
+    const status = parseUpstreamStatusFromMessage(item.error);
+    await recordTokenFailure(c.env.DB, row.token, status, item.error.slice(0, 200));
+    await applyCooldown(c.env.DB, row.token, status);
+  }
+  return c.json({ ...result, supported: true });
 });
 
 adminRoutes.get("/admin/api/batch/:taskId/stream", requireAdminAuth, async (c) => {

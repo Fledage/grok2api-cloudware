@@ -236,6 +236,23 @@ try {
         headers: { "content-type": "application/json" },
       });
     }
+    if (urlText.includes("accounts.x.ai") && urlText.includes("Tos")) {
+      return new Response(new Uint8Array([128, 0, 0, 0, 15, 103, 114, 112, 99, 45, 115, 116, 97, 116, 117, 115, 58, 48, 13, 10]), {
+        status: 200,
+        headers: { "content-type": "application/grpc-web+proto" },
+      });
+    }
+    if (urlText.includes("/rest/auth/set-birth-date")) {
+      const body = JSON.parse(String(init.body || "{}"));
+      assert.match(String(body.birthDate || ""), /^\d{4}-\d{2}-\d{2}T/);
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (urlText.includes("auth_mgmt.AuthManagement/UpdateUserFeatureControls")) {
+      return new Response(new Uint8Array([128, 0, 0, 0, 15, 103, 114, 112, 99, 45, 115, 116, 97, 116, 117, 115, 58, 48, 13, 10]), {
+        status: 200,
+        headers: { "content-type": "application/grpc-web+proto" },
+      });
+    }
     return originalFetch(url, init);
   };
 
@@ -354,6 +371,42 @@ try {
     assert.equal(batchClear.status, "success");
     assert.equal(batchClear.summary.ok, 1);
     assert.equal(batchClear.results["super_to...34567890"].deleted, 2);
+
+    const nsfwResp = await app.default.fetch(
+      new Request("https://worker.example/admin/api/batch/nsfw", {
+        method: "POST",
+        headers: { ...adminHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ tokens: ["super_token_1234567890"] }),
+      }),
+      env,
+      ctx,
+    );
+    assert.equal(nsfwResp.status, 200);
+    const nsfw = await nsfwResp.json();
+    assert.equal(nsfw.status, "success");
+    assert.equal(nsfw.supported, true);
+    assert.equal(nsfw.summary.ok, 1);
+    assert.equal(fetchCalls.some((call) => call.url.includes("/rest/auth/set-birth-date")), true);
+    assert.equal(fetchCalls.some((call) => call.url.includes("auth_mgmt.AuthManagement/UpdateUserFeatureControls")), true);
+
+    const beforeDisableCalls = fetchCalls.length;
+    const nsfwDisableResp = await app.default.fetch(
+      new Request("https://worker.example/admin/api/batch/nsfw?enabled=false", {
+        method: "POST",
+        headers: { ...adminHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ tokens: ["super_token_1234567890"] }),
+      }),
+      env,
+      ctx,
+    );
+    assert.equal(nsfwDisableResp.status, 200);
+    const nsfwDisable = await nsfwDisableResp.json();
+    assert.equal(nsfwDisable.status, "success");
+    assert.equal(nsfwDisable.supported, true);
+    assert.equal(nsfwDisable.summary.ok, 1);
+    const disableCalls = fetchCalls.slice(beforeDisableCalls);
+    assert.equal(disableCalls.some((call) => call.url.includes("/rest/auth/set-birth-date")), false);
+    assert.equal(disableCalls.some((call) => call.url.includes("auth_mgmt.AuthManagement/UpdateUserFeatureControls")), true);
 
     const assetsResp = await app.default.fetch(new Request("https://worker.example/admin/api/assets", { headers: adminHeaders }), env, ctx);
     assert.equal(assetsResp.status, 200);
