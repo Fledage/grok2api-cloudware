@@ -7,6 +7,7 @@ const source = readFileSync(new URL("../app/static/chat/chat.js", import.meta.ur
 function makeElement() {
   return {
     className: "",
+    value: "",
     dataset: {},
     style: {},
     children: [],
@@ -90,6 +91,9 @@ const context = {
     addEventListener() {},
     getElementById(id) {
       if (id === "image-results") return context.__imageResults;
+      if (id === "model-select") return context.__modelSelect;
+      if (id === "image-aspect") return context.__imageAspect;
+      if (id === "image-concurrency") return context.__imageConcurrency;
       return makeElement();
     },
     createElement() {
@@ -105,13 +109,25 @@ const context = {
       "data: [DONE]\n\n",
     ]),
   __imageResults: makeElement(),
+  __modelSelect: { ...makeElement(), value: "grok-imagine-image" },
+  __imageAspect: { ...makeElement(), value: "16:9" },
+  __imageConcurrency: { ...makeElement(), value: "3" },
 };
 context.globalThis = context;
 
 const tests = `
 (async () => {
+  imageGenerationExperimental = false;
+  assert.equal(isImagineWsImageModel("grok-imagine-image-lite"), false);
+  assert.equal(isImagineWsImageModel("grok-imagine-image"), true);
+  assert.equal(isImagineWsImageModel("grok-imagine-image-pro"), true);
+  assert.deepEqual(buildImageRequestConfig(), { size: "16:9", concurrency: 3 });
+  q("model-select").value = "grok-imagine-image-lite";
+  assert.deepEqual(buildImageRequestConfig(), { size: "1024x1024", concurrency: 1 });
+
   let error = null;
   try {
+    q("model-select").value = "grok-imagine-image";
     await streamImage({ prompt: "cat", model: "grok-imagine-image", n: 1 }, { Authorization: "Bearer test" });
   } catch (e) {
     error = e;

@@ -326,6 +326,9 @@ async function init() {
     }
     updateImageModeUI();
   });
+  q('model-select')?.addEventListener('change', () => {
+    if (currentTab === 'image') updateImageModeUI();
+  });
   window.addEventListener('beforeunload', () => {
     stopImageContinuous();
   });
@@ -392,6 +395,15 @@ function getImageRunMode() {
   return value === 'continuous' ? 'continuous' : 'single';
 }
 
+function isImagineWsImageModel(model) {
+  const value = String(model || q('model-select')?.value || '').trim();
+  return value === 'grok-imagine-image' || value === 'grok-imagine-image-pro';
+}
+
+function shouldUseImageWsUI(model) {
+  return imageGenerationExperimental || isImagineWsImageModel(model);
+}
+
 function getImageContinuousConcurrency() {
   return Math.max(1, Math.min(3, Math.floor(Number(q('image-concurrency')?.value || 1) || 1)));
 }
@@ -432,7 +444,7 @@ function updateImageContinuousStats() {
 }
 
 function updateImageContinuousButtons() {
-  const isContinuous = imageGenerationExperimental && getImageRunMode() === 'continuous';
+  const isContinuous = shouldUseImageWsUI() && getImageRunMode() === 'continuous';
   const startBtn = q('image-start-btn');
   const stopBtn = q('image-stop-btn');
   if (startBtn) startBtn.disabled = !isContinuous || imageContinuousRunning;
@@ -440,7 +452,7 @@ function updateImageContinuousButtons() {
 }
 
 function updateImageRunModeUI() {
-  const isContinuous = imageGenerationExperimental && getImageRunMode() === 'continuous';
+  const isContinuous = shouldUseImageWsUI() && getImageRunMode() === 'continuous';
   const nWrap = q('image-n-wrap');
   const generateWrap = q('image-generate-wrap');
   const resultBox = q('image-results');
@@ -469,7 +481,7 @@ function updateImageRunModeUI() {
 }
 
 function updateImageModeUI() {
-  const isExperimental = imageGenerationExperimental;
+  const isExperimental = shouldUseImageWsUI();
   const hint = q('image-mode-hint');
   const aspectWrap = q('image-aspect-wrap');
   const concurrencyWrap = q('image-concurrency-wrap');
@@ -671,7 +683,7 @@ function openImageContinuousSocket(socketIndex, runToken, prompt, aspectRatio, a
         event?.code !== 1008 &&
         socketState.attempt < 1 &&
         getImageRunMode() === 'continuous' &&
-        imageGenerationExperimental
+        shouldUseImageWsUI()
       ) {
         setTimeout(() => {
           if (!imageContinuousRunning || runToken !== imageContinuousRunToken) return;
@@ -711,7 +723,7 @@ function stopImageContinuous() {
   });
   imageContinuousSockets = [];
 
-  if (imageGenerationExperimental && getImageRunMode() === 'continuous') {
+  if (shouldUseImageWsUI() && getImageRunMode() === 'continuous') {
     setImageStatusText('Stopped');
   } else {
     setImageStatusText('Idle');
@@ -721,7 +733,7 @@ function stopImageContinuous() {
 }
 
 function startImageContinuous() {
-  if (!imageGenerationExperimental || getImageRunMode() !== 'continuous') {
+  if (!shouldUseImageWsUI() || getImageRunMode() !== 'continuous') {
     return;
   }
   const prompt = String(q('image-prompt')?.value || '').trim();
@@ -790,7 +802,7 @@ async function refreshImageGenerationMethod() {
     }
   } catch (e) {}
 
-  if (!imageGenerationExperimental) {
+  if (!shouldUseImageWsUI()) {
     stopImageContinuous();
   }
 
@@ -839,6 +851,7 @@ async function refreshModels() {
 
     if (currentTab === 'image') {
       sel.value = filteredIds.includes('grok-imagine-image-lite') ? 'grok-imagine-image-lite' : (filteredIds[0] || '');
+      updateImageModeUI();
       return;
     }
     if (currentTab === 'video') {
@@ -1112,7 +1125,7 @@ function updateImageCardCompleted(card, src, failed) {
 function buildImageRequestConfig() {
   const ratio = String(q('image-aspect')?.value || '2:3');
   const concurrency = Math.max(1, Math.min(3, Math.floor(Number(q('image-concurrency')?.value || 1) || 1)));
-  if (!imageGenerationExperimental) {
+  if (!shouldUseImageWsUI()) {
     return { size: '1024x1024', concurrency: 1 };
   }
   return { size: ratio, concurrency };
@@ -1208,14 +1221,14 @@ async function generateImage() {
   const headers = { ...buildApiHeaders(), 'Content-Type': 'application/json' };
   if (!headers.Authorization) return showToast('请先填写 API Key', 'warning');
 
-  if (imageGenerationExperimental && getImageRunMode() === 'continuous') {
+  const model = String(q('model-select').value || 'grok-imagine-image-lite').trim();
+  if (shouldUseImageWsUI(model) && getImageRunMode() === 'continuous') {
     startImageContinuous();
     return;
   }
 
   stopImageContinuous();
 
-  const model = String(q('model-select').value || 'grok-imagine-image-lite').trim();
   const n = Math.max(1, Math.min(10, Math.floor(Number(q('image-n').value || 1) || 1)));
   const stream = Boolean(q('stream-toggle').checked);
   const useStream = stream && n <= 2;
