@@ -667,7 +667,7 @@ window.renderAdminHeader = async function renderAdminHeader() {
 
   void (async () => {
     try {
-      const res = await fetch('/static/admin/header.html', { cache: 'no-store' });
+      const res = await fetch('/static/admin/header', { cache: 'no-store' });
       if (!res.ok) throw new Error('header unavailable');
       const html = await res.text();
       if (hasCurrentAdminNav(html)) {

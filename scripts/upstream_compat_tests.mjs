@@ -343,6 +343,9 @@ try {
         fetch: async (request) => {
           const pathname = new URL(request.url).pathname;
           if (pathname === "/admin/header.html") {
+            return new Response(null, { status: 307, headers: { location: "/admin/header" } });
+          }
+          if (pathname === "/admin/header") {
             return new Response(
               '<header><a href="https://github.com/chenyme/grok2api">原作者 @Chenyme</a><a href="https://github.com/Fledage/grok2api-cloudware">改造 @Fledage</a><a href="/admin/account">账户管理</a><a href="/admin/keys">API Key 管理</a><a href="/admin/chat">在线聊天</a><a href="/admin/datacenter">数据中心</a><a href="/admin/config">配置管理</a><a href="/admin/cache">缓存管理</a></header>',
               { status: 200 },

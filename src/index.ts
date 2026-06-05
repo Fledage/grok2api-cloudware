@@ -54,7 +54,7 @@ function shouldInlineAdminHeader(pathname: string): boolean {
 
 async function getAdminHeaderHtml(assets: Fetcher, requestUrl: string): Promise<string> {
   const url = new URL(requestUrl);
-  url.pathname = "/admin/header.html";
+  url.pathname = "/admin/header";
   url.search = "";
   const res = await assets.fetch(new Request(url.toString(), { method: "GET" }));
   return res.ok ? await res.text() : "";
