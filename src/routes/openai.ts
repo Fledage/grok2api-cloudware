@@ -44,6 +44,7 @@ import {
   resolveAspectRatio,
   resolveImageGenerationMethod,
   sendExperimentalImageEditRequest,
+  shouldUseImagineWsForImageModel,
 } from "../grok/imagineExperimental";
 import {
   buildToolSystemPrompt,
@@ -2173,6 +2174,7 @@ openAiRoutes.post("/images/generations", async (c) => {
     const responseFormat = parsedResponseFormat.value;
     const responseField = responseFieldName(responseFormat);
     const baseUrl = baseUrlFromSettings(settingsBundle, origin);
+    const useImagineWs = shouldUseImagineWsForImageModel(requestedModel);
 
     const quota = await enforceQuota({
       env: c.env,
@@ -2184,7 +2186,7 @@ openAiRoutes.post("/images/generations", async (c) => {
     if (!quota.ok) return quota.resp;
 
     if (stream) {
-      if (imageMethod === IMAGE_METHOD_IMAGINE_WS_EXPERIMENTAL) {
+      if (useImagineWs || imageMethod === IMAGE_METHOD_IMAGINE_WS_EXPERIMENTAL) {
         const experimentalToken = await selectBestToken(c.env.DB, requestedModel);
         if (experimentalToken) {
           const experimentalCookie = buildCookie(experimentalToken.token, settingsBundle.grok);
@@ -2212,6 +2214,24 @@ openAiRoutes.post("/images/generations", async (c) => {
             },
           });
           return new Response(streamBody, { status: 200, headers: streamHeaders() });
+        }
+        if (useImagineWs) {
+          await recordImageLog({
+            env: c.env,
+            ip,
+            model: requestedModel,
+            start,
+            keyName,
+            status: 503,
+            error: "NO_AVAILABLE_TOKEN",
+          });
+          return new Response(
+            createStreamErrorImageEventStream({
+              message: "No available token",
+              responseField,
+            }),
+            { status: 200, headers: streamHeaders() },
+          );
         }
       }
 
@@ -2290,7 +2310,7 @@ openAiRoutes.post("/images/generations", async (c) => {
       return new Response(streamBody, { status: 200, headers: streamHeaders() });
     }
 
-    if (imageMethod === IMAGE_METHOD_IMAGINE_WS_EXPERIMENTAL) {
+    if (useImagineWs || imageMethod === IMAGE_METHOD_IMAGINE_WS_EXPERIMENTAL) {
       const experimentalToken = await selectBestToken(c.env.DB, requestedModel);
       if (experimentalToken) {
         const experimentalCookie = buildCookie(experimentalToken.token, settingsBundle.grok);
@@ -2322,8 +2342,12 @@ openAiRoutes.post("/images/generations", async (c) => {
           const msg = e instanceof Error ? e.message : String(e);
           await recordTokenFailure(c.env.DB, experimentalToken.token, 500, msg.slice(0, 200));
           await applyCooldown(c.env.DB, experimentalToken.token, 500);
+          if (useImagineWs) throw e;
           console.warn("Experimental image generation failed, fallback to legacy:", msg);
         }
+      }
+      if (useImagineWs) {
+        return c.json(openAiError("No available token", "NO_AVAILABLE_TOKEN"), 503);
       }
     }
 

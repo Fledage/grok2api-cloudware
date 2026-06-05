@@ -1136,6 +1136,7 @@ async function streamImage(body, headers) {
   const completedSet = new Set();
   let rendered = 0;
   let buf = '';
+  let streamError = '';
 
   while (true) {
     const { done, value } = await reader.read();
@@ -1158,7 +1159,10 @@ async function streamImage(body, headers) {
 
       const payload = dataLines.join('\n').trim();
       if (!payload) continue;
-      if (payload === '[DONE]') return rendered;
+      if (payload === '[DONE]') {
+        if (!rendered && streamError) throw new Error(streamError);
+        return rendered;
+      }
 
       let obj = null;
       try {
@@ -1176,6 +1180,11 @@ async function streamImage(body, headers) {
         continue;
       }
 
+      if (type === 'image_generation.error') {
+        streamError = String(obj?.message || obj?.error || '').trim() || 'Image generation failed';
+        continue;
+      }
+
       if (type === 'image_generation.completed') {
         const src = pickImageSrc(obj);
         const failed = !src;
@@ -1188,6 +1197,7 @@ async function streamImage(body, headers) {
     }
   }
 
+  if (!rendered && streamError) throw new Error(streamError);
   return rendered;
 }
 

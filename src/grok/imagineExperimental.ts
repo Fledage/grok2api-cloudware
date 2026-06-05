@@ -31,6 +31,11 @@ export function resolveImageGenerationMethod(raw: unknown): ImageGenerationMetho
   return IMAGE_METHOD_LEGACY;
 }
 
+export function shouldUseImagineWsForImageModel(model: string): boolean {
+  const normalized = String(model || "").trim();
+  return normalized === "grok-imagine-image" || normalized === "grok-imagine-image-pro";
+}
+
 const ALLOWED_ASPECT_RATIOS = new Set(["16:9", "9:16", "1:1", "2:3", "3:2"]);
 const SIZE_TO_RATIO: Record<string, string> = {
   "1024x1024": "1:1",

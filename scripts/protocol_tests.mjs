@@ -234,6 +234,9 @@ try {
   assert.equal(resetPayload.type, "conversation.item.create");
   assert.equal(typeof resetPayload.timestamp, "number");
   assert.deepEqual(resetPayload.item, { type: "message", content: [{ type: "reset" }] });
+  assert.equal(imagine.shouldUseImagineWsForImageModel("grok-imagine-image-lite"), false);
+  assert.equal(imagine.shouldUseImagineWsForImageModel("grok-imagine-image"), true);
+  assert.equal(imagine.shouldUseImagineWsForImageModel("grok-imagine-image-pro"), true);
 
   const imagePayload = imagine.buildImagineWsPayload("draw a cat", "req_1", "2:3", true);
   assert.equal(imagePayload.item.content[0].type, "input_text");
