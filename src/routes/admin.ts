@@ -448,6 +448,153 @@ async function refreshNsfwForToken(args: {
   return { success: true, tagged: result.tagged, steps: result.steps };
 }
 
+async function adminConfigPayload(env: Env): Promise<Record<string, unknown>> {
+  const settings = await getSettings(env);
+  const filterTags = String(settings.grok.filtered_tags ?? "")
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+  return {
+    app: {
+      api_key: settings.grok.api_key ?? "",
+      admin_username: settings.global.admin_username ?? "admin",
+      app_key: settings.global.admin_password ?? "admin",
+      app_url: settings.global.base_url ?? "",
+      image_format: settings.global.image_mode ?? "url",
+      video_format: "url",
+      webui_enabled: Boolean(settings.global.webui_enabled),
+      webui_key: settings.global.webui_key ?? "",
+    },
+    grok: {
+      temporary: Boolean(settings.grok.temporary),
+      stream: true,
+      thinking: Boolean(settings.grok.show_thinking),
+      dynamic_statsig: Boolean(settings.grok.dynamic_statsig),
+      filter_tags: filterTags,
+      video_poster_preview: Boolean(settings.grok.video_poster_preview),
+      imagine_public_image_proxy: Boolean(settings.grok.imagine_public_image_proxy),
+      timeout: Number(settings.grok.stream_total_timeout ?? 600),
+      base_proxy_url: String(settings.grok.proxy_url ?? ""),
+      asset_proxy_url: String(settings.grok.cache_proxy_url ?? ""),
+      cf_clearance: String(settings.grok.cf_clearance ?? ""),
+      cf_cookies: String(settings.grok.cf_cookies ?? ""),
+      user_agent: String(settings.grok.user_agent ?? ""),
+      max_retry: 3,
+      retry_status_codes: Array.isArray(settings.grok.retry_status_codes) ? settings.grok.retry_status_codes : [401, 429, 403],
+      image_generation_method: normalizeImageGenerationMethod(settings.grok.image_generation_method),
+    },
+    token: {
+      auto_refresh: Boolean(settings.token.auto_refresh),
+      refresh_interval_hours: Number(settings.token.refresh_interval_hours ?? 8),
+      fail_threshold: Number(settings.token.fail_threshold ?? 5),
+      save_delay_ms: Number(settings.token.save_delay_ms ?? 500),
+      reload_interval_sec: Number(settings.token.reload_interval_sec ?? 30),
+    },
+    cache: {
+      enable_auto_clean: Boolean(settings.cache.enable_auto_clean),
+      limit_mb: Number(settings.cache.limit_mb ?? 1024),
+      keep_base64_cache: Boolean(settings.cache.keep_base64_cache),
+    },
+    performance: {
+      assets_max_concurrent: Number(settings.performance.assets_max_concurrent ?? 25),
+      media_max_concurrent: Number(settings.performance.media_max_concurrent ?? 50),
+      usage_max_concurrent: Number(settings.performance.usage_max_concurrent ?? 25),
+      assets_delete_batch_size: Number(settings.performance.assets_delete_batch_size ?? 10),
+      admin_assets_batch_size: Number(settings.performance.admin_assets_batch_size ?? 10),
+    },
+  };
+}
+
+async function saveAdminConfigPayload(env: Env, body: any): Promise<void> {
+  const appCfg = (body && typeof body === "object" ? body.app : null) as any;
+  const grokCfg = (body && typeof body === "object" ? body.grok : null) as any;
+  const tokenCfg = (body && typeof body === "object" ? body.token : null) as any;
+  const cacheCfg = (body && typeof body === "object" ? body.cache : null) as any;
+  const performanceCfg = (body && typeof body === "object" ? body.performance : null) as any;
+
+  const global_config: any = {};
+  const grok_config: any = {};
+  const token_config: any = {};
+  const cache_config: any = {};
+  const performance_config: any = {};
+
+  if (appCfg && typeof appCfg === "object") {
+    if (typeof appCfg.api_key === "string") grok_config.api_key = appCfg.api_key.trim();
+    if (typeof appCfg.admin_username === "string") global_config.admin_username = appCfg.admin_username.trim() || "admin";
+    if (typeof appCfg.app_key === "string") global_config.admin_password = appCfg.app_key.trim() || "admin";
+    if (typeof appCfg.app_url === "string") global_config.base_url = appCfg.app_url.trim();
+    if (typeof appCfg.webui_enabled === "boolean") global_config.webui_enabled = appCfg.webui_enabled;
+    if (typeof appCfg.webui_key === "string") global_config.webui_key = appCfg.webui_key.trim();
+    if (appCfg.image_format === "url" || appCfg.image_format === "base64" || appCfg.image_format === "b64_json") {
+      global_config.image_mode = appCfg.image_format;
+    }
+  }
+
+  if (grokCfg && typeof grokCfg === "object") {
+    if (typeof grokCfg.base_proxy_url === "string") grok_config.proxy_url = grokCfg.base_proxy_url.trim();
+    if (typeof grokCfg.asset_proxy_url === "string") grok_config.cache_proxy_url = grokCfg.asset_proxy_url.trim();
+    if (typeof grokCfg.cf_clearance === "string") grok_config.cf_clearance = grokCfg.cf_clearance.trim();
+    if (typeof grokCfg.cf_cookies === "string") grok_config.cf_cookies = grokCfg.cf_cookies.trim();
+    if (typeof grokCfg.user_agent === "string") grok_config.user_agent = grokCfg.user_agent.trim();
+    if (typeof grokCfg.filter_tags === "string") {
+      grok_config.filtered_tags = grokCfg.filter_tags;
+    } else if (Array.isArray(grokCfg.filter_tags)) {
+      grok_config.filtered_tags = grokCfg.filter_tags.map((x: any) => String(x ?? "").trim()).filter(Boolean).join(",");
+    }
+    if (typeof grokCfg.dynamic_statsig === "boolean") grok_config.dynamic_statsig = grokCfg.dynamic_statsig;
+    if (typeof grokCfg.thinking === "boolean") grok_config.show_thinking = grokCfg.thinking;
+    if (typeof grokCfg.temporary === "boolean") grok_config.temporary = grokCfg.temporary;
+    if (typeof grokCfg.video_poster_preview === "boolean") grok_config.video_poster_preview = grokCfg.video_poster_preview;
+    if (typeof grokCfg.imagine_public_image_proxy === "boolean") {
+      grok_config.imagine_public_image_proxy = grokCfg.imagine_public_image_proxy;
+    }
+    if (Array.isArray(grokCfg.retry_status_codes)) {
+      grok_config.retry_status_codes = grokCfg.retry_status_codes.map((x: any) => Number(x)).filter((n: number) => Number.isFinite(n));
+    }
+    if (Number.isFinite(Number(grokCfg.timeout))) grok_config.stream_total_timeout = Math.max(1, Math.floor(Number(grokCfg.timeout)));
+    if (typeof grokCfg.image_generation_method === "string" && grokCfg.image_generation_method.trim()) {
+      grok_config.image_generation_method = normalizeImageGenerationMethod(grokCfg.image_generation_method);
+    }
+  }
+
+  if (tokenCfg && typeof tokenCfg === "object") {
+    if (typeof tokenCfg.auto_refresh === "boolean") token_config.auto_refresh = tokenCfg.auto_refresh;
+    if (Number.isFinite(Number(tokenCfg.refresh_interval_hours))) {
+      token_config.refresh_interval_hours = Math.max(1, Number(tokenCfg.refresh_interval_hours));
+    }
+    if (Number.isFinite(Number(tokenCfg.fail_threshold))) {
+      token_config.fail_threshold = Math.max(1, Math.floor(Number(tokenCfg.fail_threshold)));
+    }
+    if (Number.isFinite(Number(tokenCfg.save_delay_ms))) {
+      token_config.save_delay_ms = Math.max(0, Math.floor(Number(tokenCfg.save_delay_ms)));
+    }
+    if (Number.isFinite(Number(tokenCfg.reload_interval_sec))) {
+      token_config.reload_interval_sec = Math.max(0, Math.floor(Number(tokenCfg.reload_interval_sec)));
+    }
+  }
+
+  if (cacheCfg && typeof cacheCfg === "object") {
+    if (typeof cacheCfg.enable_auto_clean === "boolean") cache_config.enable_auto_clean = cacheCfg.enable_auto_clean;
+    if (Number.isFinite(Number(cacheCfg.limit_mb))) cache_config.limit_mb = Math.max(1, Math.floor(Number(cacheCfg.limit_mb)));
+    if (typeof cacheCfg.keep_base64_cache === "boolean") cache_config.keep_base64_cache = cacheCfg.keep_base64_cache;
+  }
+
+  if (performanceCfg && typeof performanceCfg === "object") {
+    const fields = [
+      "assets_max_concurrent",
+      "media_max_concurrent",
+      "usage_max_concurrent",
+      "assets_delete_batch_size",
+      "admin_assets_batch_size",
+    ] as const;
+    for (const f of fields) {
+      if (Number.isFinite(Number(performanceCfg[f]))) performance_config[f] = Math.max(1, Math.floor(Number(performanceCfg[f])));
+    }
+  }
+
+  await saveSettings(env, { global_config, grok_config, token_config, cache_config, performance_config });
+}
+
 async function batchTokenRows(env: Env, requested: string[] = []): Promise<TokenRow[]> {
   const rows = await listTokens(env.DB);
   const manageable = rows.filter(isTokenManageable);
@@ -617,62 +764,7 @@ adminRoutes.post("/webui/api/voice/token", async (c) => {
 
 adminRoutes.get("/api/v1/admin/config", requireAdminAuth, async (c) => {
   try {
-    const settings = await getSettings(c.env);
-    const filterTags = String(settings.grok.filtered_tags ?? "")
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
-    return c.json({
-      app: {
-        api_key: settings.grok.api_key ?? "",
-        admin_username: settings.global.admin_username ?? "admin",
-        app_key: settings.global.admin_password ?? "admin",
-        app_url: settings.global.base_url ?? "",
-        image_format: settings.global.image_mode ?? "url",
-        video_format: "url",
-        webui_enabled: Boolean(settings.global.webui_enabled),
-        webui_key: settings.global.webui_key ?? "",
-      },
-      grok: {
-        temporary: Boolean(settings.grok.temporary),
-        stream: true,
-        thinking: Boolean(settings.grok.show_thinking),
-        dynamic_statsig: Boolean(settings.grok.dynamic_statsig),
-        filter_tags: filterTags,
-        video_poster_preview: Boolean(settings.grok.video_poster_preview),
-        imagine_public_image_proxy: Boolean(settings.grok.imagine_public_image_proxy),
-        timeout: Number(settings.grok.stream_total_timeout ?? 600),
-        base_proxy_url: String(settings.grok.proxy_url ?? ""),
-        asset_proxy_url: String(settings.grok.cache_proxy_url ?? ""),
-        cf_clearance: String(settings.grok.cf_clearance ?? ""),
-        cf_cookies: String(settings.grok.cf_cookies ?? ""),
-        user_agent: String(settings.grok.user_agent ?? ""),
-        max_retry: 3,
-        retry_status_codes: Array.isArray(settings.grok.retry_status_codes) ? settings.grok.retry_status_codes : [401, 429, 403],
-        image_generation_method: normalizeImageGenerationMethod(
-          settings.grok.image_generation_method,
-        ),
-      },
-      token: {
-        auto_refresh: Boolean(settings.token.auto_refresh),
-        refresh_interval_hours: Number(settings.token.refresh_interval_hours ?? 8),
-        fail_threshold: Number(settings.token.fail_threshold ?? 5),
-        save_delay_ms: Number(settings.token.save_delay_ms ?? 500),
-        reload_interval_sec: Number(settings.token.reload_interval_sec ?? 30),
-      },
-      cache: {
-        enable_auto_clean: Boolean(settings.cache.enable_auto_clean),
-        limit_mb: Number(settings.cache.limit_mb ?? 1024),
-        keep_base64_cache: Boolean(settings.cache.keep_base64_cache),
-      },
-      performance: {
-        assets_max_concurrent: Number(settings.performance.assets_max_concurrent ?? 25),
-        media_max_concurrent: Number(settings.performance.media_max_concurrent ?? 50),
-        usage_max_concurrent: Number(settings.performance.usage_max_concurrent ?? 25),
-        assets_delete_batch_size: Number(settings.performance.assets_delete_batch_size ?? 10),
-        admin_assets_batch_size: Number(settings.performance.admin_assets_batch_size ?? 10),
-      },
-    });
+    return c.json(await adminConfigPayload(c.env));
   } catch (e) {
     return c.json(legacyErr(`Get config failed: ${e instanceof Error ? e.message : String(e)}`), 500);
   }
@@ -681,89 +773,25 @@ adminRoutes.get("/api/v1/admin/config", requireAdminAuth, async (c) => {
 adminRoutes.post("/api/v1/admin/config", requireAdminAuth, async (c) => {
   try {
     const body = (await c.req.json()) as any;
-    const appCfg = (body && typeof body === "object" ? body.app : null) as any;
-    const grokCfg = (body && typeof body === "object" ? body.grok : null) as any;
-    const tokenCfg = (body && typeof body === "object" ? body.token : null) as any;
-    const cacheCfg = (body && typeof body === "object" ? body.cache : null) as any;
-    const performanceCfg = (body && typeof body === "object" ? body.performance : null) as any;
+    await saveAdminConfigPayload(c.env, body);
+    return c.json(legacyOk({ message: "配置已更新" }));
+  } catch (e) {
+    return c.json(legacyErr(`Update config failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
+});
 
-    const global_config: any = {};
-    const grok_config: any = {};
-    const token_config: any = {};
-    const cache_config: any = {};
-    const performance_config: any = {};
+adminRoutes.get("/admin/api/config", requireAdminAuth, async (c) => {
+  try {
+    return c.json(await adminConfigPayload(c.env));
+  } catch (e) {
+    return c.json(legacyErr(`Get config failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
+});
 
-    if (appCfg && typeof appCfg === "object") {
-      if (typeof appCfg.api_key === "string") grok_config.api_key = appCfg.api_key.trim();
-      if (typeof appCfg.admin_username === "string") global_config.admin_username = appCfg.admin_username.trim() || "admin";
-      if (typeof appCfg.app_key === "string") global_config.admin_password = appCfg.app_key.trim() || "admin";
-      if (typeof appCfg.app_url === "string") global_config.base_url = appCfg.app_url.trim();
-      if (typeof appCfg.webui_enabled === "boolean") global_config.webui_enabled = appCfg.webui_enabled;
-      if (typeof appCfg.webui_key === "string") global_config.webui_key = appCfg.webui_key.trim();
-      if (appCfg.image_format === "url" || appCfg.image_format === "base64" || appCfg.image_format === "b64_json")
-        global_config.image_mode = appCfg.image_format;
-    }
-
-    if (grokCfg && typeof grokCfg === "object") {
-      if (typeof grokCfg.base_proxy_url === "string") grok_config.proxy_url = grokCfg.base_proxy_url.trim();
-      if (typeof grokCfg.asset_proxy_url === "string") grok_config.cache_proxy_url = grokCfg.asset_proxy_url.trim();
-      if (typeof grokCfg.cf_clearance === "string") grok_config.cf_clearance = grokCfg.cf_clearance.trim();
-      if (typeof grokCfg.cf_cookies === "string") grok_config.cf_cookies = grokCfg.cf_cookies.trim();
-      if (typeof grokCfg.user_agent === "string") grok_config.user_agent = grokCfg.user_agent.trim();
-      if (typeof grokCfg.filter_tags === "string") {
-        grok_config.filtered_tags = grokCfg.filter_tags;
-      } else if (Array.isArray(grokCfg.filter_tags)) {
-        grok_config.filtered_tags = grokCfg.filter_tags.map((x: any) => String(x ?? "").trim()).filter(Boolean).join(",");
-      }
-      if (typeof grokCfg.dynamic_statsig === "boolean") grok_config.dynamic_statsig = grokCfg.dynamic_statsig;
-      if (typeof grokCfg.thinking === "boolean") grok_config.show_thinking = grokCfg.thinking;
-      if (typeof grokCfg.temporary === "boolean") grok_config.temporary = grokCfg.temporary;
-      if (typeof grokCfg.video_poster_preview === "boolean") grok_config.video_poster_preview = grokCfg.video_poster_preview;
-      if (typeof grokCfg.imagine_public_image_proxy === "boolean") {
-        grok_config.imagine_public_image_proxy = grokCfg.imagine_public_image_proxy;
-      }
-      if (Array.isArray(grokCfg.retry_status_codes))
-        grok_config.retry_status_codes = grokCfg.retry_status_codes.map((x: any) => Number(x)).filter((n: number) => Number.isFinite(n));
-      if (Number.isFinite(Number(grokCfg.timeout))) grok_config.stream_total_timeout = Math.max(1, Math.floor(Number(grokCfg.timeout)));
-      if (typeof grokCfg.image_generation_method === "string" && grokCfg.image_generation_method.trim()) {
-        grok_config.image_generation_method = normalizeImageGenerationMethod(
-          grokCfg.image_generation_method,
-        );
-      }
-    }
-
-    if (tokenCfg && typeof tokenCfg === "object") {
-      if (typeof tokenCfg.auto_refresh === "boolean") token_config.auto_refresh = tokenCfg.auto_refresh;
-      if (Number.isFinite(Number(tokenCfg.refresh_interval_hours)))
-        token_config.refresh_interval_hours = Math.max(1, Number(tokenCfg.refresh_interval_hours));
-      if (Number.isFinite(Number(tokenCfg.fail_threshold)))
-        token_config.fail_threshold = Math.max(1, Math.floor(Number(tokenCfg.fail_threshold)));
-      if (Number.isFinite(Number(tokenCfg.save_delay_ms)))
-        token_config.save_delay_ms = Math.max(0, Math.floor(Number(tokenCfg.save_delay_ms)));
-      if (Number.isFinite(Number(tokenCfg.reload_interval_sec)))
-        token_config.reload_interval_sec = Math.max(0, Math.floor(Number(tokenCfg.reload_interval_sec)));
-    }
-
-    if (cacheCfg && typeof cacheCfg === "object") {
-      if (typeof cacheCfg.enable_auto_clean === "boolean") cache_config.enable_auto_clean = cacheCfg.enable_auto_clean;
-      if (Number.isFinite(Number(cacheCfg.limit_mb))) cache_config.limit_mb = Math.max(1, Math.floor(Number(cacheCfg.limit_mb)));
-      if (typeof cacheCfg.keep_base64_cache === "boolean") cache_config.keep_base64_cache = cacheCfg.keep_base64_cache;
-    }
-
-    if (performanceCfg && typeof performanceCfg === "object") {
-      const fields = [
-        "assets_max_concurrent",
-        "media_max_concurrent",
-        "usage_max_concurrent",
-        "assets_delete_batch_size",
-        "admin_assets_batch_size",
-      ] as const;
-      for (const f of fields) {
-        if (Number.isFinite(Number(performanceCfg[f]))) performance_config[f] = Math.max(1, Math.floor(Number(performanceCfg[f])));
-      }
-    }
-
-    await saveSettings(c.env, { global_config, grok_config, token_config, cache_config, performance_config });
+adminRoutes.post("/admin/api/config", requireAdminAuth, async (c) => {
+  try {
+    const body = (await c.req.json()) as any;
+    await saveAdminConfigPayload(c.env, body);
     return c.json(legacyOk({ message: "配置已更新" }));
   } catch (e) {
     return c.json(legacyErr(`Update config failed: ${e instanceof Error ? e.message : String(e)}`), 500);

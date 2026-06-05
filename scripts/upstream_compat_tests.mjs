@@ -388,6 +388,11 @@ try {
     const batchStreamByAppKey = await app.default.fetch(new Request("https://worker.example/admin/api/batch/task_1/stream?app_key=admin"), env, ctx);
     assert.equal(batchStreamByAppKey.status, 200);
 
+    const upstreamConfigAliasResp = await app.default.fetch(new Request("https://worker.example/admin/api/config?app_key=admin"), env, ctx);
+    assert.equal(upstreamConfigAliasResp.status, 200);
+    const upstreamConfigAlias = await upstreamConfigAliasResp.json();
+    assert.equal(upstreamConfigAlias.app.webui_enabled, true);
+
     const modelsResp = await app.default.fetch(new Request("https://worker.example/webui/api/models"), env, ctx);
     assert.equal(modelsResp.status, 200);
     const models = await modelsResp.json();
@@ -417,6 +422,29 @@ try {
     assert.equal(JSON.parse(DB.state.settings.get("grok")).imagine_public_image_proxy, true);
     assert.equal(JSON.parse(DB.state.settings.get("global")).webui_enabled, true);
     assert.equal(JSON.parse(DB.state.settings.get("global")).webui_key, "webui-secret");
+
+    const upstreamConfigAliasUpdateResp = await app.default.fetch(
+      new Request("https://worker.example/admin/api/config?app_key=admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ app: { webui_key: "alias-secret" } }),
+      }),
+      env,
+      ctx,
+    );
+    assert.equal(upstreamConfigAliasUpdateResp.status, 200);
+    assert.equal(JSON.parse(DB.state.settings.get("global")).webui_key, "alias-secret");
+
+    const resetAliasKeyResp = await app.default.fetch(
+      new Request("https://worker.example/api/v1/admin/config", {
+        method: "POST",
+        headers: { ...adminHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ app: { webui_key: "webui-secret" } }),
+      }),
+      env,
+      ctx,
+    );
+    assert.equal(resetAliasKeyResp.status, 200);
 
     const webuiVerifyWithoutKey = await app.default.fetch(new Request("https://worker.example/webui/api/verify"), env, ctx);
     assert.equal(webuiVerifyWithoutKey.status, 401);
