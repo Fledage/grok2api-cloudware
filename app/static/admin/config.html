@@ -339,6 +339,8 @@
 
 <!-- ── Header ─────────────────────────────────────────────────────────────── -->
 <div id="admin-header" data-active="/admin/config"></div>
+<script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
 
 <!-- ── Main ───────────────────────────────────────────────────────────────── -->
 <main class="admin-main" style="padding-bottom:80px">
@@ -377,9 +379,7 @@
   </div>
 </div>
 
-<script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
-<script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
 <script>
@@ -548,7 +548,7 @@ const SCHEMA_DEF = [
               { value: 'single_proxy', label: '代理（固定）', labelKey: 'config.schema.options.proxyMode.singleProxy' },
               { value: 'proxy_pool', label: '代理（轮转）', labelKey: 'config.schema.options.proxyMode.proxyPool' },
             ],
-            desc: '控制出站流量代理策略。direct 为直连；single_proxy 使用固定代理；proxy_pool 在代理池中轮转。',
+            desc: 'Cloudflare Workers 直连会使用 Cloudflare 出口；若 grok.com 返回 anti-bot 403，请使用非 Cloudflare 出口的上游中继/HTTP relay。Workers 不能直接使用 socks5:// 这类本地代理。',
             descKey: 'config.schema.fields.proxyMode.desc',
           },
           {
@@ -557,7 +557,7 @@ const SCHEMA_DEF = [
             labelKey: 'config.schema.fields.proxyUrl.label',
             type: 'text',
             wide: true,
-            desc: 'API 流量的出站代理地址，支持 http、https、socks5 协议。',
+            desc: 'API 流量的上游中继地址。Cloudflare Workers 不支持直接 socks5/http CONNECT 代理；请填写可接收并转发请求的 HTTP relay，或改用 Docker 版本配置 socks5/Warp。',
             descKey: 'config.schema.fields.proxyUrl.desc',
             showIf: { path: 'proxy.egress.mode', values: ['single_proxy'] },
           },
@@ -567,7 +567,7 @@ const SCHEMA_DEF = [
             labelKey: 'config.schema.fields.resourceProxyUrl.label',
             type: 'text',
             wide: true,
-            desc: '图片、视频等媒体资源下载的专用代理地址；留空时回落至基础代理。',
+            desc: '图片、视频等媒体资源下载的专用上游中继地址；留空时仍从 Worker 直接访问资源。',
             descKey: 'config.schema.fields.resourceProxyUrl.desc',
             showIf: { path: 'proxy.egress.mode', values: ['single_proxy'] },
           },
@@ -576,7 +576,7 @@ const SCHEMA_DEF = [
             label: '基础代理池',
             labelKey: 'config.schema.fields.proxyPool.label',
             type: 'textarea',
-            desc: 'API 流量代理池，每行一个代理 URL，请求时轮转使用。',
+            desc: 'API 流量上游中继池，每行一个 HTTP relay 地址。Workers 环境不会直接拨 socks5 代理。',
             descKey: 'config.schema.fields.proxyPool.desc',
             showIf: { path: 'proxy.egress.mode', values: ['proxy_pool'] },
           },
@@ -585,7 +585,7 @@ const SCHEMA_DEF = [
             label: '资源代理池',
             labelKey: 'config.schema.fields.resourceProxyPool.label',
             type: 'textarea',
-            desc: '媒体资源下载专用代理池，每行一个代理 URL；留空时回落至基础代理池。',
+            desc: '媒体资源下载专用上游中继池，每行一个 HTTP relay 地址；留空时仍按资源代理 URL 或 Worker 直连处理。',
             descKey: 'config.schema.fields.resourceProxyPool.desc',
             showIf: { path: 'proxy.egress.mode', values: ['proxy_pool'] },
           },
@@ -1326,7 +1326,6 @@ function doReset() {
       console.error('i18n init failed', e);
     });
 
-    await renderAdminHeader?.();
     await renderSiteFooter?.();
     const key = await adminKey.get();
     if (!key || !await verifyKey(ADMIN_API + '/verify', key).catch(() => false))

@@ -19,8 +19,10 @@
 <body style="background:#FAF9F5">
   <div id="toast-container" class="toast-container"></div>
   <div id="admin-header" data-active="/admin/chat"></div>
+  <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
 
-  <main class="admin-main fade-in space-y-4">
+  <main class="admin-main space-y-4">
     <div class="card">
       <div class="card-title">连接配置</div>
       <div class="grid grid-cols-12 gap-3 items-end">
@@ -196,16 +198,10 @@
 
   <div id="app-footer"></div>
 
-  <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/admin-legacy-auth.js?v={{APP_VERSION}}"></script>
-  <script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
-  <script>
-    renderAdminHeader?.();
-    renderSiteFooter?.();
-  </script>
   <script src="/static/chat/chat.js?v=5"></script>
 </body>
 

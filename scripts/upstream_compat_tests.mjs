@@ -104,7 +104,14 @@ function makeDb() {
               }
               if (sql.includes("SELECT token FROM tokens") && sql.includes("ORDER BY")) {
                 const requestedType = String(params[0] || "");
-                const row = state.tokens.find((t) => t.token_type === requestedType && t.status === "active");
+                const failureLimit = Number(params[1] ?? 3);
+                const now = Number(params[2] ?? Date.now());
+                const row = state.tokens.find((t) =>
+                  t.token_type === requestedType &&
+                  t.status === "active" &&
+                  (t.failed_count ?? 0) < failureLimit &&
+                  (!t.cooldown_until || t.cooldown_until <= now)
+                );
                 return row ? { token: row.token } : null;
               }
               if (sql.includes("SELECT COUNT(1) as c FROM request_logs")) return { c: 0 };
@@ -157,6 +164,28 @@ function makeDb() {
                   if (typeof params[0] === "number") row.remaining_queries = params[0];
                   if (typeof params[1] === "number") row.heavy_remaining_queries = params[1];
                 }
+                return { meta: { changes: row ? 1 : 0 } };
+              }
+              if (sql.includes("UPDATE tokens SET failed_count = failed_count + 1")) {
+                const token = String(params.at(-1) || "");
+                const row = state.tokens.find((t) => t.token === token);
+                if (row) {
+                  row.failed_count += 1;
+                  row.last_failure_time = Number(params[0] || 0);
+                  row.last_failure_reason = String(params[1] || "");
+                }
+                return { meta: { changes: row ? 1 : 0 } };
+              }
+              if (sql.includes("UPDATE tokens SET cooldown_until")) {
+                const token = String(params.at(-1) || "");
+                const row = state.tokens.find((t) => t.token === token);
+                if (row) row.cooldown_until = Number(params[0] || 0) || null;
+                return { meta: { changes: row ? 1 : 0 } };
+              }
+              if (sql.includes("UPDATE tokens SET status = 'expired'")) {
+                const token = String(params.at(-1) || "");
+                const row = state.tokens.find((t) => t.token === token);
+                if (row) row.status = "expired";
                 return { meta: { changes: row ? 1 : 0 } };
               }
               return { meta: { changes: 1 } };
@@ -261,6 +290,12 @@ try {
         headers: { "content-type": "application/json" },
       });
     }
+    if (urlText.includes("/rest/app-chat/conversations/new")) {
+      return new Response(
+        JSON.stringify({ error: { code: 7, message: "Request rejected by anti-bot rules.", details: [] } }),
+        { status: 403, headers: { "content-type": "application/json" } },
+      );
+    }
     if (urlText.includes("accounts.x.ai") && urlText.includes("Tos")) {
       return new Response(new Uint8Array([128, 0, 0, 0, 15, 103, 114, 112, 99, 45, 115, 116, 97, 116, 117, 115, 58, 48, 13, 10]), {
         status: 200,
@@ -307,6 +342,22 @@ try {
       ASSETS: {
         fetch: async (request) => {
           const pathname = new URL(request.url).pathname;
+          if (pathname === "/admin/header.html") {
+            return new Response(
+              '<header><a href="https://github.com/chenyme/grok2api">原作者 @Chenyme</a><a href="https://github.com/Fledage/grok2api-cloudware">改造 @Fledage</a><a href="/admin/account">账户管理</a><a href="/admin/keys">API Key 管理</a><a href="/admin/chat">在线聊天</a><a href="/admin/datacenter">数据中心</a><a href="/admin/config">配置管理</a><a href="/admin/cache">缓存管理</a></header>',
+              { status: 200 },
+            );
+          }
+          if ([
+            "/admin/account.html",
+            "/admin/config.html",
+            "/admin/cache.html",
+            "/keys/keys.html",
+            "/chat/chat_admin.html",
+            "/datacenter/datacenter.html",
+          ].includes(pathname)) {
+            return new Response(`${pathname}<div id="admin-header" data-active="/admin/account"></div>`, { status: 200 });
+          }
           return knownAssets.has(pathname)
             ? new Response(pathname, { status: 200 })
             : new Response("missing", { status: 404 });
@@ -359,7 +410,11 @@ try {
     assert.equal(adminAccount.headers.get("location"), "/admin/account?v=dev");
     const adminAccountPage = await app.default.fetch(new Request("https://worker.example/admin/account?v=dev"), env, ctx);
     assert.equal(adminAccountPage.status, 200);
-    assert.equal(await adminAccountPage.text(), "/admin/account.html");
+    const adminAccountHtml = await adminAccountPage.text();
+    assert.ok(adminAccountHtml.includes("/admin/account.html"));
+    assert.ok(adminAccountHtml.includes("原作者 @Chenyme"));
+    assert.ok(adminAccountHtml.includes("改造 @Fledage"));
+    assert.ok(adminAccountHtml.includes('href="/admin/keys"'));
     const legacyManage = await app.default.fetch(new Request("https://worker.example/manage"), env, ctx);
     assert.equal(legacyManage.status, 302);
     assert.equal(legacyManage.headers.get("location"), "/admin/account?v=dev");
@@ -369,21 +424,48 @@ try {
     const legacyTokenVersioned = await app.default.fetch(new Request("https://worker.example/admin/token?v=dev"), env, ctx);
     assert.equal(legacyTokenVersioned.status, 302);
     assert.equal(legacyTokenVersioned.headers.get("location"), "/admin/account?v=dev");
+    const legacyStaticToken = await app.default.fetch(new Request("https://worker.example/static/token/token.html"), env, ctx);
+    assert.equal(legacyStaticToken.status, 302);
+    assert.equal(legacyStaticToken.headers.get("location"), "/admin/account?v=dev");
+    const legacyAssetToken = await app.default.fetch(new Request("https://worker.example/token/token.html"), env, ctx);
+    assert.equal(legacyAssetToken.status, 302);
+    assert.equal(legacyAssetToken.headers.get("location"), "/admin/account?v=dev");
+    const legacyTokenRoot = await app.default.fetch(new Request("https://worker.example/token"), env, ctx);
+    assert.equal(legacyTokenRoot.status, 302);
+    assert.equal(legacyTokenRoot.headers.get("location"), "/admin/account?v=dev");
+    const legacyStaticConfig = await app.default.fetch(new Request("https://worker.example/static/config/config.html"), env, ctx);
+    assert.equal(legacyStaticConfig.status, 302);
+    assert.equal(legacyStaticConfig.headers.get("location"), "/admin/config?v=dev");
+    const legacyAssetConfig = await app.default.fetch(new Request("https://worker.example/config/config.html"), env, ctx);
+    assert.equal(legacyAssetConfig.status, 302);
+    assert.equal(legacyAssetConfig.headers.get("location"), "/admin/config?v=dev");
+    const legacyConfigRoot = await app.default.fetch(new Request("https://worker.example/config"), env, ctx);
+    assert.equal(legacyConfigRoot.status, 302);
+    assert.equal(legacyConfigRoot.headers.get("location"), "/admin/config?v=dev");
+    const legacyStaticCache = await app.default.fetch(new Request("https://worker.example/static/cache/cache.html"), env, ctx);
+    assert.equal(legacyStaticCache.status, 302);
+    assert.equal(legacyStaticCache.headers.get("location"), "/admin/cache?v=dev");
+    const legacyAssetCache = await app.default.fetch(new Request("https://worker.example/cache/cache.html"), env, ctx);
+    assert.equal(legacyAssetCache.status, 302);
+    assert.equal(legacyAssetCache.headers.get("location"), "/admin/cache?v=dev");
+    const legacyCacheRoot = await app.default.fetch(new Request("https://worker.example/cache"), env, ctx);
+    assert.equal(legacyCacheRoot.status, 302);
+    assert.equal(legacyCacheRoot.headers.get("location"), "/admin/cache?v=dev");
     const adminConfigPage = await app.default.fetch(new Request("https://worker.example/admin/config?v=dev"), env, ctx);
     assert.equal(adminConfigPage.status, 200);
-    assert.equal(await adminConfigPage.text(), "/admin/config.html");
+    assert.ok((await adminConfigPage.text()).includes("/admin/config.html"));
     const adminCachePage = await app.default.fetch(new Request("https://worker.example/admin/cache?v=dev"), env, ctx);
     assert.equal(adminCachePage.status, 200);
-    assert.equal(await adminCachePage.text(), "/admin/cache.html");
+    assert.ok((await adminCachePage.text()).includes("/admin/cache.html"));
     const adminKeysPage = await app.default.fetch(new Request("https://worker.example/admin/keys?v=dev"), env, ctx);
     assert.equal(adminKeysPage.status, 200);
-    assert.equal(await adminKeysPage.text(), "/keys/keys.html");
+    assert.ok((await adminKeysPage.text()).includes("/keys/keys.html"));
     const adminChatPage = await app.default.fetch(new Request("https://worker.example/admin/chat?v=dev"), env, ctx);
     assert.equal(adminChatPage.status, 200);
-    assert.equal(await adminChatPage.text(), "/chat/chat_admin.html");
+    assert.ok((await adminChatPage.text()).includes("/chat/chat_admin.html"));
     const adminDatacenterPage = await app.default.fetch(new Request("https://worker.example/admin/datacenter?v=dev"), env, ctx);
     assert.equal(adminDatacenterPage.status, 200);
-    assert.equal(await adminDatacenterPage.text(), "/datacenter/datacenter.html");
+    assert.ok((await adminDatacenterPage.text()).includes("/datacenter/datacenter.html"));
 
     const verify = await app.default.fetch(new Request("https://worker.example/webui/api/verify"), env, ctx);
     assert.equal(verify.status, 200);
@@ -651,6 +733,34 @@ try {
     const assets = await assetsResp.json();
     assert.equal(assets.total_assets, 2);
     assert.equal(assets.tokens[0].assets[0].id, "asset_1");
+
+    for (const token of DB.state.tokens) {
+      token.status = "active";
+      token.failed_count = 0;
+      token.cooldown_until = null;
+    }
+    const priorFetchCount = fetchCalls.length;
+    const imageAntiBotResp = await app.default.fetch(
+      new Request("https://worker.example/v1/images/generations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "grok-imagine-image-lite",
+          prompt: "cat",
+          n: 1,
+        }),
+      }),
+      env,
+      ctx,
+    );
+    assert.equal(imageAntiBotResp.status, 403);
+    const imageAntiBot = await imageAntiBotResp.json();
+    assert.equal(imageAntiBot.error.code, "upstream_antibot");
+    assert.match(imageAntiBot.error.message, /Worker egress|anti-bot/i);
+    assert.equal(
+      fetchCalls.slice(priorFetchCount).filter((call) => String(call.url).includes("/rest/app-chat/conversations/new")).length,
+      2,
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

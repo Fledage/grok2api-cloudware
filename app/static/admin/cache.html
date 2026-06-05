@@ -280,6 +280,8 @@
 
 <!-- ── Header (rendered by admin-header.js) ─────────────────────────────── -->
 <div id="admin-header" data-active="/admin/cache"></div>
+<script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
 
 <main class="admin-main" style="padding-bottom:60px">
 
@@ -441,9 +443,7 @@
 
 </main>
 
-<script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
-<script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
 <script>
@@ -1249,7 +1249,6 @@ function _esc(value) {
 (async () => {
   await waitI18n();
   applyCacheI18n();
-  await renderAdminHeader?.();
   await renderSiteFooter?.();
   const key = await adminKey.get();
   if (!key || !await verifyKey(ADMIN_API + '/verify', key).catch(() => false)) {

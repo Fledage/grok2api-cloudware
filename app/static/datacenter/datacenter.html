@@ -16,8 +16,10 @@
 
 <body style="background:#FAF9F5">
   <div id="admin-header" data-active="/admin/datacenter"></div>
+  <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
 
-  <main class="admin-main space-y-6 fade-in">
+  <main class="admin-main space-y-6">
     <div class="space-y-6">
       <div class="flex flex-wrap justify-between items-start gap-3">
         <div>
@@ -136,16 +138,10 @@
 
   <div id="toast-container" class="toast-container"></div>
 
-  <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/admin-legacy-auth.js?v={{APP_VERSION}}"></script>
-  <script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
-  <script>
-    renderAdminHeader?.();
-    renderSiteFooter?.();
-  </script>
   <script src="/static/datacenter/datacenter.js?v=2"></script>
 </body>
 

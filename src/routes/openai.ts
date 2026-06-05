@@ -71,6 +71,66 @@ function openAiError(message: string, code: string): Record<string, unknown> {
   return { error: { message, type: "invalid_request_error", code } };
 }
 
+function openAiErrorResponse(message: string, code: string, status: number): Response {
+  return new Response(JSON.stringify(openAiError(message, code)), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
+const DEFAULT_RETRY_STATUS_CODES = [401, 429, 403];
+
+function retryStatusCodes(settings: Awaited<ReturnType<typeof getSettings>>["grok"]): number[] {
+  const values = Array.isArray(settings.retry_status_codes)
+    ? settings.retry_status_codes
+    : DEFAULT_RETRY_STATUS_CODES;
+  return [...new Set(values.map((value) => Number(value)).filter((value) => Number.isFinite(value)))];
+}
+
+function isAntiBotUpstream(status: number, message: string): boolean {
+  const text = String(message || "").toLowerCase();
+  return (
+    status === 403 &&
+    (
+      text.includes("anti-bot") ||
+      text.includes("anti bot") ||
+      text.includes('"code":7') ||
+      text.includes('"code": 7') ||
+      text.includes("request rejected") ||
+      text.includes("cf_clearance")
+    )
+  );
+}
+
+function upstreamErrorInfo(status: number, message: string): { message: string; code: string; status: number } {
+  const raw = String(message || "").trim();
+  const detail = raw ? raw.slice(0, 500) : `Upstream ${status}`;
+  if (isAntiBotUpstream(status, detail)) {
+    return {
+      status,
+      code: "upstream_antibot",
+      message:
+        `Upstream ${status}: grok.com rejected this Worker egress by anti-bot rules. ` +
+        `Use a non-Cloudflare egress or a Worker-compatible upstream relay, and refresh cf_clearance/User-Agent if needed. ${detail}`,
+    };
+  }
+  return {
+    status,
+    code: "upstream_error",
+    message: `Upstream ${status}: ${detail}`,
+  };
+}
+
+function errorInfoFromMessage(message: string): { status: number; code: string; message: string } {
+  const raw = String(message || "");
+  const matched = raw.match(/\b(?:Upstream|Video upstream|LiveKit token upstream)\s+(\d{3})\b/i);
+  const status = matched ? Number(matched[1]) : 500;
+  if (Number.isFinite(status) && status >= 400 && status < 600) {
+    return upstreamErrorInfo(status, raw);
+  }
+  return { status: 500, code: "internal_error", message: raw || "Internal error" };
+}
+
 function resolveDefaultStream(requestStream: unknown, defaultStream: boolean): boolean {
   return requestStream === undefined ? defaultStream : Boolean(requestStream);
 }
@@ -1341,9 +1401,7 @@ openAiRoutes.post("/chat/completions", async (c) => {
     const settingsBundle = await getSettings(c.env);
     const cfg = MODEL_CONFIG[requestedModel]!;
 
-    const retryCodes = Array.isArray(settingsBundle.grok.retry_status_codes)
-      ? settingsBundle.grok.retry_status_codes
-      : [401, 429];
+    const retryCodes = retryStatusCodes(settingsBundle.grok);
 
     const stream = resolveDefaultStream(body.stream, Boolean(settingsBundle.grok.stream));
     const maxRetry = 3;
@@ -1497,7 +1555,8 @@ openAiRoutes.post("/chat/completions", async (c) => {
       error: lastErr ?? "unknown_error",
     });
 
-    return c.json(openAiError(lastErr ?? "Upstream error", "upstream_error"), 500);
+    const errInfo = errorInfoFromMessage(lastErr ?? "Upstream error");
+    return openAiErrorResponse(errInfo.message, errInfo.code, errInfo.status);
   } catch (e) {
     const duration = (Date.now() - start) / 1000;
     await addRequestLog(c.env.DB, {
@@ -1829,9 +1888,7 @@ openAiRoutes.post("/responses", async (c) => {
     const toolChoice = body.tool_choice;
     const emitThink = String((body.reasoning ?? {}).effort ?? "").trim().toLowerCase() !== "none";
     const settingsBundle = await getSettings(c.env);
-    const retryCodes = Array.isArray(settingsBundle.grok.retry_status_codes)
-      ? settingsBundle.grok.retry_status_codes
-      : [401, 429];
+    const retryCodes = retryStatusCodes(settingsBundle.grok);
     const stream = resolveDefaultStream(body.stream, Boolean(settingsBundle.grok.stream));
     let lastErr: string | null = null;
 
@@ -1939,7 +1996,8 @@ openAiRoutes.post("/responses", async (c) => {
       token_suffix: "",
       error: lastErr ?? "unknown_error",
     });
-    return c.json(openAiError(lastErr ?? "Upstream error", "upstream_error"), 500);
+    const errInfo = errorInfoFromMessage(lastErr ?? "Upstream error");
+    return openAiErrorResponse(errInfo.message, errInfo.code, errInfo.status);
   } catch (error) {
     await addRequestLog(c.env.DB, {
       ip,
@@ -1985,9 +2043,7 @@ openAiRoutes.post("/messages", async (c) => {
     const toolChoice = normalizeAnthropicToolChoice(body.tool_choice);
     const emitThink = String((body.thinking ?? {}).type ?? "").trim().toLowerCase() !== "disabled";
     const settingsBundle = await getSettings(c.env);
-    const retryCodes = Array.isArray(settingsBundle.grok.retry_status_codes)
-      ? settingsBundle.grok.retry_status_codes
-      : [401, 429];
+    const retryCodes = retryStatusCodes(settingsBundle.grok);
     const stream = resolveDefaultStream(body.stream, Boolean(settingsBundle.grok.stream));
     let lastErr: string | null = null;
 
@@ -2095,7 +2151,8 @@ openAiRoutes.post("/messages", async (c) => {
       token_suffix: "",
       error: lastErr ?? "unknown_error",
     });
-    return c.json(openAiError(lastErr ?? "Upstream error", "upstream_error"), 500);
+    const errInfo = errorInfoFromMessage(lastErr ?? "Upstream error");
+    return openAiErrorResponse(errInfo.message, errInfo.code, errInfo.status);
   } catch (error) {
     await addRequestLog(c.env.DB, {
       ip,
@@ -2168,6 +2225,7 @@ openAiRoutes.post("/images/generations", async (c) => {
     const responseField = responseFieldName(responseFormat);
     const baseUrl = baseUrlFromSettings(settingsBundle, origin);
     const useImagineWs = shouldUseImagineWsForImageModel(requestedModel);
+    const retryCodes = retryStatusCodes(settingsBundle.grok);
 
     const quota = await enforceQuota({
       env: c.env,
@@ -2274,7 +2332,7 @@ openAiRoutes.post("/images/generations", async (c) => {
           createStreamErrorImageEventStream({
             message: isContentModerationMessage(txt)
               ? txt.slice(0, 500)
-              : `Upstream ${upstream.status}`,
+              : upstreamErrorInfo(upstream.status, txt).message,
             responseField,
           }),
           { status: 200, headers: streamHeaders() },
@@ -2349,26 +2407,32 @@ openAiRoutes.post("/images/generations", async (c) => {
       Array.from({ length: calls }),
       Math.min(calls, Math.max(1, concurrency)),
       async () => {
-      const chosen = await selectBestToken(c.env.DB, requestedModel);
-      if (!chosen) throw new Error("No available token");
-      const cookie = buildCookie(chosen.token, settingsBundle.grok);
-      try {
-        return await runImageCall({
-          requestModel: requestedModel,
-          prompt: imageCallPrompt("generation", prompt),
-          fileIds: [],
-          cookie,
-          settings: settingsBundle.grok,
-          responseFormat,
-          baseUrl,
-        });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        await recordTokenFailure(c.env.DB, chosen.token, 500, msg.slice(0, 200));
-        await applyCooldown(c.env.DB, chosen.token, 500);
-        throw e;
-      }
-    },
+        let lastError: { message: string; status: number } | null = null;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const chosen = await selectBestToken(c.env.DB, requestedModel);
+          if (!chosen) throw new Error(lastError?.message || "No available token");
+          const cookie = buildCookie(chosen.token, settingsBundle.grok);
+          try {
+            return await runImageCall({
+              requestModel: requestedModel,
+              prompt: imageCallPrompt("generation", prompt),
+              fileIds: [],
+              cookie,
+              settings: settingsBundle.grok,
+              responseFormat,
+              baseUrl,
+            });
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            const errInfo = errorInfoFromMessage(msg);
+            lastError = { message: errInfo.message, status: errInfo.status };
+            await recordTokenFailure(c.env.DB, chosen.token, errInfo.status, msg.slice(0, 200));
+            await applyCooldown(c.env.DB, chosen.token, errInfo.status);
+            if (!retryCodes.includes(errInfo.status) || attempt >= 2) throw new Error(errInfo.message);
+          }
+        }
+        throw new Error(lastError?.message || "Image generation failed");
+      },
     );
     const urls = dedupeImages(urlsNested.flat().filter(Boolean));
     if (!urls.length) throw new Error("Image generation returned no images");
@@ -2405,10 +2469,11 @@ openAiRoutes.post("/images/generations", async (c) => {
       model: requestedModel || "image",
       start,
       keyName,
-      status: 500,
+      status: errorInfoFromMessage(message).status,
       error: message,
     });
-    return c.json(openAiError(message || "Internal error", "internal_error"), 500);
+    const errInfo = errorInfoFromMessage(message);
+    return openAiErrorResponse(errInfo.message, errInfo.code, errInfo.status);
   }
 });
 
@@ -2585,7 +2650,7 @@ openAiRoutes.post("/images/edits", async (c) => {
           createStreamErrorImageEventStream({
             message: isContentModerationMessage(txt)
               ? txt.slice(0, 500)
-              : `Upstream ${upstream.status}`,
+              : upstreamErrorInfo(upstream.status, txt).message,
             responseField,
           }),
           { status: 200, headers: streamHeaders() },

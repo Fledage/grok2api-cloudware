@@ -70,8 +70,6 @@ button{cursor:pointer}
 /* Helpers */
 .flex{display:flex}.items-center{align-items:center}.gap-2{gap:8px}
 .mt-2{margin-top:8px}.text-xs{font-size:12px}.text-muted{color:var(--fg-muted)}.w-full{width:100%}
-.fade-in{animation:fadeIn .35s ease-out both}
-@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 
 /* Global footer */
 .site-footer{
@@ -103,13 +101,16 @@ button{cursor:pointer}
 
 /* Admin layout */
 .admin-header{background:#FAF9F5;position:fixed;top:0;left:0;right:0;z-index:100}
-.admin-header-inner{max-width:1280px;width:100%;height:54px;margin:0 auto;padding:0 28px;display:grid;grid-template-columns:minmax(220px,260px) minmax(0,1fr) minmax(240px,272px);align-items:center;gap:16px}
+.admin-header-inner{max-width:1280px;width:100%;height:54px;margin:0 auto;padding:0 28px;display:grid;grid-template-columns:minmax(270px,330px) minmax(0,1fr) minmax(220px,252px);align-items:center;gap:14px}
 .webui-header-bar{width:100%;background:#FAF9F5}
 .webui-header-inner{max-width:none;padding:0 18px}
 .admin-brand-wrap{display:flex;align-items:center;gap:8px;min-width:0;white-space:nowrap}
 .admin-brand-link{display:inline-flex;align-items:center;gap:8px;min-width:0;color:inherit}
 .admin-brand{font-size:14px;font-weight:700}
 .admin-username{font-size:12px;color:var(--fg-muted);overflow:hidden;text-overflow:ellipsis}
+.admin-author-links{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden}
+.admin-author-link{font-size:11px;color:var(--fg-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;transition:color .15s}
+.admin-author-link:hover{color:var(--fg)}
 .admin-nav{display:flex;align-items:center;justify-content:center;gap:0;min-width:0}
 .admin-nav-link{font-size:14px;color:var(--fg-muted);padding:6px 14px;font-weight:500;transition:color .15s;border-radius:0}
 .admin-nav-link:hover{color:var(--fg)}

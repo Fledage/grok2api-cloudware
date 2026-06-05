@@ -516,23 +516,23 @@
         },
         "proxyMode": {
           "label": "代理模式",
-          "desc": "控制出站流量代理策略。direct 为直连；single_proxy 使用固定代理；proxy_pool 在代理池中轮转。"
+          "desc": "Cloudflare Workers 直连会使用 Cloudflare 出口；若 grok.com 返回 anti-bot 403，请使用非 Cloudflare 出口的上游中继/HTTP relay。Workers 不能直接使用 socks5:// 这类本地代理。"
         },
         "proxyUrl": {
           "label": "基础代理 URL",
-          "desc": "API 流量的出站代理地址，支持 http、https、socks5 协议。"
+          "desc": "API 流量的上游中继地址。Cloudflare Workers 不支持直接 socks5/http CONNECT 代理；请填写可接收并转发请求的 HTTP relay，或改用 Docker 版本配置 socks5/Warp。"
         },
         "resourceProxyUrl": {
           "label": "资源代理 URL",
-          "desc": "图片、视频等媒体资源下载的专用代理地址；留空时回落至基础代理。"
+          "desc": "图片、视频等媒体资源下载的专用上游中继地址；留空时仍从 Worker 直接访问资源。"
         },
         "proxyPool": {
           "label": "基础代理池",
-          "desc": "API 流量代理池，每行一个代理 URL，请求时轮转使用。"
+          "desc": "API 流量上游中继池，每行一个 HTTP relay 地址。Workers 环境不会直接拨 socks5 代理。"
         },
         "resourceProxyPool": {
           "label": "资源代理池",
-          "desc": "媒体资源下载专用代理池，每行一个代理 URL；留空时回落至基础代理池。"
+          "desc": "媒体资源下载专用上游中继池，每行一个 HTTP relay 地址；留空时仍按资源代理 URL 或 Worker 直连处理。"
         },
         "skipSslVerify": {
           "label": "跳过 SSL 校验",

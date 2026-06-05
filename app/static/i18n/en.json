@@ -516,23 +516,23 @@
         },
         "proxyMode": {
           "label": "Proxy Mode",
-          "desc": "Controls outbound proxy routing. direct sends traffic without a proxy, single_proxy uses a fixed proxy, and proxy_pool rotates across a pool."
+          "desc": "Cloudflare Workers direct mode uses Cloudflare egress. If grok.com returns anti-bot 403, use a non-Cloudflare upstream relay/HTTP relay. Workers cannot directly use local socks5:// style proxies."
         },
         "proxyUrl": {
           "label": "Primary Proxy URL",
-          "desc": "Outbound proxy endpoint for API traffic. Supports http, https, and socks5."
+          "desc": "Upstream relay endpoint for API traffic. Cloudflare Workers cannot directly use socks5 or HTTP CONNECT proxies; provide an HTTP relay that forwards the request, or use the Docker deployment for socks5/Warp."
         },
         "resourceProxyUrl": {
           "label": "Resource Proxy URL",
-          "desc": "Dedicated proxy endpoint for downloading images, videos, and other media assets. Falls back to the primary proxy when left blank."
+          "desc": "Dedicated upstream relay for downloading images, videos, and other media assets. When left blank, the Worker still fetches resources directly."
         },
         "proxyPool": {
           "label": "Primary Proxy Pool",
-          "desc": "Pool of outbound proxies for API traffic, one proxy URL per line."
+          "desc": "Pool of upstream HTTP relay URLs for API traffic, one per line. Workers do not directly dial socks5 proxies."
         },
         "resourceProxyPool": {
           "label": "Resource Proxy Pool",
-          "desc": "Dedicated proxy pool for media downloads, one proxy URL per line. Falls back to the primary pool when left blank."
+          "desc": "Dedicated upstream HTTP relay pool for media downloads, one per line. When left blank, resources use the resource relay URL or Worker direct egress."
         },
         "skipSslVerify": {
           "label": "Skip SSL Verification",

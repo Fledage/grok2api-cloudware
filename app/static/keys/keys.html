@@ -16,8 +16,10 @@
 <body style="background:#FAF9F5">
   <div id="toast-container" class="toast-container"></div>
   <div id="admin-header" data-active="/admin/keys"></div>
+  <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
 
-  <main class="admin-main space-y-6 fade-in">
+  <main class="admin-main space-y-6">
     <div class="keys-page-header flex flex-wrap justify-between items-start gap-3">
       <div>
         <h2 class="text-2xl font-semibold tracking-tight">API Key 管理</h2>
@@ -162,16 +164,10 @@
     </div>
   </div>
 
-  <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/admin-legacy-auth.js?v={{APP_VERSION}}"></script>
-  <script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
   <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
-  <script>
-    renderAdminHeader?.();
-    renderSiteFooter?.();
-  </script>
   <script src="/static/keys/keys.js?v=3"></script>
 </body>
 

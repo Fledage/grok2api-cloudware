@@ -41,6 +41,39 @@ function assetFetchError(message: string, buildSha: string): Response {
   });
 }
 
+function shouldInlineAdminHeader(pathname: string): boolean {
+  return [
+    "/admin/account.html",
+    "/admin/config.html",
+    "/admin/cache.html",
+    "/keys/keys.html",
+    "/chat/chat_admin.html",
+    "/datacenter/datacenter.html",
+  ].includes(pathname);
+}
+
+async function getAdminHeaderHtml(assets: Fetcher, requestUrl: string): Promise<string> {
+  const url = new URL(requestUrl);
+  url.pathname = "/admin/header.html";
+  url.search = "";
+  const res = await assets.fetch(new Request(url.toString(), { method: "GET" }));
+  return res.ok ? await res.text() : "";
+}
+
+function inlineAdminHeader(body: string, headerHtml: string): string {
+  const html = headerHtml.trim();
+  if (!html || !body.includes('id="admin-header"')) return body;
+  return body.replace(
+    /(<div id="admin-header"[^>]*>)(?:\s*)<\/div>/,
+    (_match, openTag: string) => `${openTag}${html}</div>`,
+  );
+}
+
+function redirectVersionedAdmin(c: any, pathname: string): Response {
+  const buildSha = getBuildSha(c.env as Env);
+  return c.redirect(`${pathname}?v=${encodeURIComponent(buildSha)}`, 302);
+}
+
 async function fetchAsset(c: any, pathname: string): Promise<Response> {
   const assets = getAssets(c.env as Env);
   const buildSha = getBuildSha(c.env as Env);
@@ -68,7 +101,11 @@ async function fetchAsset(c: any, pathname: string): Promise<Response> {
     }
 
     if (lower.endsWith(".html")) {
-      const body = await res.text();
+      let body = await res.text();
+      if (shouldInlineAdminHeader(pathname)) {
+        const headerHtml = await getAdminHeaderHtml(assets, c.req.url).catch(() => "");
+        body = inlineAdminHeader(body, headerHtml);
+      }
       return withResponseHeaders(
         new Response(body.replaceAll("{{APP_VERSION}}", buildSha), {
           status: res.status,
@@ -136,8 +173,7 @@ app.get("/login", (c) => {
 
 // Legacy (old admin UI): keep /manage as an alias.
 app.get("/manage", (c) => {
-  const buildSha = getBuildSha(c.env as Env);
-  return c.redirect(`/admin/account?v=${encodeURIComponent(buildSha)}`, 302);
+  return redirectVersionedAdmin(c, "/admin/account");
 });
 
 app.get("/admin", (c) => c.redirect("/admin/login", 302));
@@ -157,9 +193,15 @@ app.get("/admin/account", (c) => {
 });
 
 app.get("/admin/token", (c) => {
-  const buildSha = getBuildSha(c.env as Env);
-  return c.redirect(`/admin/account?v=${encodeURIComponent(buildSha)}`, 302);
+  return redirectVersionedAdmin(c, "/admin/account");
 });
+
+app.get("/token", (c) => redirectVersionedAdmin(c, "/admin/account"));
+app.get("/token/token.html", (c) => redirectVersionedAdmin(c, "/admin/account"));
+app.get("/config", (c) => redirectVersionedAdmin(c, "/admin/config"));
+app.get("/config/config.html", (c) => redirectVersionedAdmin(c, "/admin/config"));
+app.get("/cache", (c) => redirectVersionedAdmin(c, "/admin/cache"));
+app.get("/cache/cache.html", (c) => redirectVersionedAdmin(c, "/admin/cache"));
 
 app.get("/admin/datacenter", (c) => {
   const buildSha = getBuildSha(c.env as Env);
@@ -225,6 +267,15 @@ app.get("/webui/chatkit", (c) => fetchWebuiPage(c, "/webui/chatkit.html", "/webu
 app.get("/static/*", (c) => {
   const url = new URL(c.req.url);
   if (url.pathname === "/static/_worker.js") return c.notFound();
+  if (url.pathname === "/static/token/token.html") {
+    return redirectVersionedAdmin(c, "/admin/account");
+  }
+  if (url.pathname === "/static/config/config.html") {
+    return redirectVersionedAdmin(c, "/admin/config");
+  }
+  if (url.pathname === "/static/cache/cache.html") {
+    return redirectVersionedAdmin(c, "/admin/cache");
+  }
   url.pathname = url.pathname.replace(/^\/static\//, "/");
   return fetchAsset(c, url.pathname);
 });

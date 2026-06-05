@@ -713,6 +713,8 @@
 
 <!-- ── Header ─────────────────────────────────────────────────────────────── -->
 <div id="admin-header" data-active="/admin/account"></div>
+<script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
+<script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
 
 <!-- ── Main ───────────────────────────────────────────────────────────────── -->
 <main class="admin-main">
@@ -1084,9 +1086,7 @@
   </div>
 </div>
 
-<script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
-<script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
 <script>
@@ -1152,7 +1152,6 @@ function waitI18n() {
 (async () => {
   await waitI18n();
   applyAccountI18n();
-  await renderAdminHeader?.();
   await renderSiteFooter?.();
   initFilterMenu();
   const key = await adminKey.get();
