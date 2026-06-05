@@ -43,6 +43,7 @@ import {
   generateImagineWs,
   resolveAspectRatio,
   resolveImageGenerationMethod,
+  replaceImageEditPlaceholders,
   sendExperimentalImageEditRequest,
   shouldUseImagineWsForImageModel,
 } from "../grok/imagineExperimental";
@@ -64,6 +65,7 @@ import { nowMs } from "../utils/time";
 import { arrayBufferToBase64 } from "../utils/base64";
 import { upsertCacheRow } from "../repo/cache";
 import { createVideoJob, getVideoJob, updateVideoJob, videoJobToResponse, type VideoJobRow } from "../repo/videoJobs";
+import { toMediaOutputUrl } from "../grok/mediaUrls";
 
 function openAiError(message: string, code: string): Record<string, unknown> {
   return { error: { message, type: "invalid_request_error", code } };
@@ -230,27 +232,6 @@ async function enforceQuota(args: {
   return { ok: true };
 }
 
-function base64UrlEncodeString(input: string): string {
-  const bytes = new TextEncoder().encode(input);
-  let binary = "";
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
-function encodeAssetPath(raw: string): string {
-  try {
-    const u = new URL(raw);
-    return `u_${base64UrlEncodeString(u.toString())}`;
-  } catch {
-    const p = raw.startsWith("/") ? raw : `/${raw}`;
-    return `p_${base64UrlEncodeString(p)}`;
-  }
-}
-
-function toProxyUrl(baseUrl: string, path: string): string {
-  return `${baseUrl.replace(/\/$/, "")}/images/${path}`;
-}
-
 type ImageResponseFormat = "url" | "base64" | "b64_json";
 
 function resolveResponseFormat(raw: unknown, defaultMode: string): ImageResponseFormat | null {
@@ -362,7 +343,11 @@ async function convertRawUrlByFormat(
   },
 ): Promise<string> {
   if (responseFormat === "url") {
-    return toProxyUrl(args.baseUrl, encodeAssetPath(rawUrl));
+    return toMediaOutputUrl({
+      rawUrl,
+      baseUrl: args.baseUrl,
+      proxyImaginePublic: args.settings.imagine_public_image_proxy === true,
+    });
   }
   return fetchImageAsBase64({ rawUrl, cookie: args.cookie, settings: args.settings });
 }
@@ -1601,7 +1586,11 @@ async function parseVideoCreateInput(c: OpenAiContext): Promise<{
 
 function toOpenAiVideoProxyUrl(origin: string, settingsBundle: Awaited<ReturnType<typeof getSettings>>, rawUrl: string): string {
   const baseUrl = baseUrlFromSettings(settingsBundle, origin);
-  return toProxyUrl(baseUrl, encodeAssetPath(rawUrl));
+  return toMediaOutputUrl({
+    rawUrl,
+    baseUrl,
+    proxyImaginePublic: settingsBundle.grok.imagine_public_image_proxy === true,
+  });
 }
 
 async function runVideoSegmentCall(args: {
@@ -2501,6 +2490,7 @@ openAiRoutes.post("/images/edits", async (c) => {
 
     const fileIds: string[] = [];
     const fileUris: string[] = [];
+    const editReferences: Array<{ fileId: string; fileUri: string }> = [];
     for (const file of files) {
       const bytes = await file.arrayBuffer();
       if (bytes.byteLength <= 0) {
@@ -2522,13 +2512,17 @@ openAiRoutes.post("/images/edits", async (c) => {
       const uploaded = await uploadImage(dataUrl, cookie, settingsBundle.grok);
       if (uploaded.fileId) fileIds.push(uploaded.fileId);
       if (uploaded.fileUri) fileUris.push(uploaded.fileUri);
+      if (uploaded.fileId && uploaded.fileUri) {
+        editReferences.push({ fileId: uploaded.fileId, fileUri: uploaded.fileUri });
+      }
     }
+    const editPrompt = replaceImageEditPlaceholders(prompt, editReferences);
 
     if (stream) {
       if (imageMethod === IMAGE_METHOD_IMAGINE_WS_EXPERIMENTAL) {
         try {
           const upstream = await sendExperimentalImageEditRequest({
-            prompt: imageCallPrompt("edit", prompt),
+            prompt: imageCallPrompt("edit", editPrompt),
             fileUris,
             cookie,
             settings: settingsBundle.grok,
@@ -2564,7 +2558,7 @@ openAiRoutes.post("/images/edits", async (c) => {
 
       const upstream = await runImageStreamCall({
         requestModel: requestedModel,
-        prompt: imageCallPrompt("edit", prompt),
+        prompt: imageCallPrompt("edit", editPrompt),
         fileIds,
         cookie,
         settings: settingsBundle.grok,
@@ -2621,7 +2615,7 @@ openAiRoutes.post("/images/edits", async (c) => {
         const calls = Math.ceil(n / 2);
         const urlsNested = await mapLimit(Array.from({ length: calls }), 3, async () =>
           runExperimentalImageEditCall({
-            prompt: imageCallPrompt("edit", prompt),
+            prompt: imageCallPrompt("edit", editPrompt),
             fileUris,
             cookie,
             settings: settingsBundle.grok,
@@ -2656,7 +2650,7 @@ openAiRoutes.post("/images/edits", async (c) => {
     const urlsNested = await mapLimit(Array.from({ length: calls }), 3, async () => {
       return runImageCall({
         requestModel: requestedModel,
-        prompt: imageCallPrompt("edit", prompt),
+        prompt: imageCallPrompt("edit", editPrompt),
         fileIds,
         cookie,
         settings: settingsBundle.grok,

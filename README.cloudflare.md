@@ -214,6 +214,7 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml config
    - 或者关闭动态并填写 `x_statsig_id`
    - （可选）填写 `cf_clearance`（只填值，不要 `cf_clearance=` 前缀）
    - （可选）开启 `video_poster_preview`：将返回内容中的 `<video>` 替换为 Poster 预览图（默认关闭）
+   - （可选）开启 `imagine_public_image_proxy`：默认关闭时 `imagine-public*` 图片直返上游公开链接；开启后转为 Worker `/images/*` 代理链接
    - （可选）`image_generation_method`：`legacy`（默认）或 `imagine_ws_experimental`（让 lite/编辑也优先尝试新方法，失败自动回退旧方法）；`grok-imagine-image` 与 `grok-imagine-image-pro` 会按 upstream 行为自动走 Imagine WebSocket
 3. **Keys**：创建 API Key，用于调用 `/v1/*`
 
@@ -225,7 +226,7 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml config
 - GET /v1/models (model set aligns with `readme.md`, including latest additions/removals)
 - GET /v1/images/method: returns current image-generation mode (legacy or imagine_ws_experimental) for /chat and /admin/chat UI switching
 - POST /v1/images/generations: accepts `grok-imagine-image-lite`, `grok-imagine-image`, `grok-imagine-image-pro` (`grok-imagine-1.0` remains a compatibility alias); lite uses chat-based generation, image/pro use Imagine WebSocket
-- POST /v1/images/edits: accepts `grok-imagine-image-edit` (`grok-imagine-1.0-edit` remains a compatibility alias)
+- POST /v1/images/edits: accepts `grok-imagine-image-edit` (`grok-imagine-1.0-edit` remains a compatibility alias); supports up to 7 reference images and upstream-style `@IMAGE1`, `@IMAGE2` placeholders in the prompt
 - Video chat model: `grok-imagine-video` (`grok-imagine-1.0-video` remains a compatibility alias)
 - GET /images/<img_path>: reads from KV cache; on miss fetches assets.grok.com and writes back to KV (daily expiry/cleanup policy)
 - Note: Workers KV single-value size is limited (recommended <= 25MB); most video players use Range requests, which may bypass KV hits

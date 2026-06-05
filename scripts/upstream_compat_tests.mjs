@@ -122,6 +122,10 @@ function makeDb() {
               return makeResult([]);
             },
             async run() {
+              if (sql.includes("INSERT INTO settings")) {
+                state.settings.set(String(params[0] || ""), String(params[1] || ""));
+                return { meta: { changes: 1 } };
+              }
               if (sql.includes("UPDATE tokens SET status = ?")) {
                 const status = String(params[0] || "");
                 const wanted = new Set(params.slice(1).map((item) => String(item || "")));
@@ -288,6 +292,23 @@ try {
     assert.ok(ids.includes("grok-imagine-video"));
     assert.ok(!ids.includes("definitely-not-a-model"));
     assert.equal(models.data.find((item) => item.id === "grok-imagine-video").capability, "video");
+
+    const configBeforeResp = await app.default.fetch(new Request("https://worker.example/api/v1/admin/config", { headers: adminHeaders }), env, ctx);
+    assert.equal(configBeforeResp.status, 200);
+    const configBefore = await configBeforeResp.json();
+    assert.equal(configBefore.grok.imagine_public_image_proxy, false);
+
+    const configUpdateResp = await app.default.fetch(
+      new Request("https://worker.example/api/v1/admin/config", {
+        method: "POST",
+        headers: { ...adminHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ grok: { imagine_public_image_proxy: true } }),
+      }),
+      env,
+      ctx,
+    );
+    assert.equal(configUpdateResp.status, 200);
+    assert.equal(JSON.parse(DB.state.settings.get("grok")).imagine_public_image_proxy, true);
 
     const disabledResp = await app.default.fetch(
       new Request("https://worker.example/admin/api/tokens/disabled/batch", {

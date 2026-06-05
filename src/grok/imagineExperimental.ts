@@ -332,7 +332,7 @@ export async function generateImagineWs(args: {
   return urls;
 }
 
-function buildExperimentalImageEditPayload(args: {
+export function buildExperimentalImageEditPayload(args: {
   prompt: string;
   imageReferences: string[];
   modelName: "imagine-image-edit" | "grok-3";
@@ -350,7 +350,6 @@ function buildExperimentalImageEditPayload(args: {
     enableImageStreaming: true,
     imageGenerationCount: 2,
     forceConcise: false,
-    toolOverrides: { imageGen: true },
     enableSideBySide: true,
     sendFinalMetadata: true,
     isReasoning: false,
@@ -378,6 +377,18 @@ function buildExperimentalImageEditPayload(args: {
   }
 
   return payload;
+}
+
+export function replaceImageEditPlaceholders(
+  prompt: string,
+  references: Array<{ fileId?: string }>,
+): string {
+  return String(prompt || "").replace(/@IMAGE(\d+)\b/gi, (match, rawIndex) => {
+    const index = Number(rawIndex);
+    if (!Number.isInteger(index) || index < 1 || index > references.length) return match;
+    const fileId = String(references[index - 1]?.fileId ?? "").trim();
+    return fileId ? `@${fileId}` : match;
+  });
 }
 
 export async function sendExperimentalImageEditRequest(args: {

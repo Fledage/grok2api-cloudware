@@ -60,6 +60,7 @@ try {
   const assets = await import(pathToFileURL(join(outDir, "src/grok/assets.js")));
   const imageCards = await import(pathToFileURL(join(outDir, "src/grok/imageCards.js")));
   const imagine = await import(pathToFileURL(join(outDir, "src/grok/imagineExperimental.js")));
+  const mediaUrls = await import(pathToFileURL(join(outDir, "src/grok/mediaUrls.js")));
   const models = await import(pathToFileURL(join(outDir, "src/grok/models.js")));
   const videoApi = await import(pathToFileURL(join(outDir, "src/grok/video.js")));
 
@@ -77,6 +78,32 @@ try {
   );
   assert.equal(
     models.isModelAvailableForPools("grok-imagine-image", { basic: false, super: true, heavy: false }),
+    true,
+  );
+  const publicImageUrl = "https://imagine-public.grok.com/generated/image.png";
+  assert.equal(mediaUrls.isImaginePublicUrl(publicImageUrl), true);
+  assert.equal(
+    mediaUrls.toMediaOutputUrl({
+      rawUrl: publicImageUrl,
+      baseUrl: "https://worker.example",
+      proxyImaginePublic: false,
+    }),
+    publicImageUrl,
+  );
+  assert.equal(
+    mediaUrls.toMediaOutputUrl({
+      rawUrl: publicImageUrl,
+      baseUrl: "https://worker.example",
+      proxyImaginePublic: true,
+    }).startsWith("https://worker.example/images/u_"),
+    true,
+  );
+  assert.equal(
+    mediaUrls.toMediaOutputUrl({
+      rawUrl: "https://assets.grok.com/users/demo/generated/image.png",
+      baseUrl: "https://worker.example",
+      proxyImaginePublic: false,
+    }).startsWith("https://worker.example/images/u_"),
     true,
   );
   assert.deepEqual(
@@ -276,6 +303,21 @@ try {
   assert.equal(imagine.shouldUseImagineWsForImageModel("grok-imagine-image-lite"), false);
   assert.equal(imagine.shouldUseImagineWsForImageModel("grok-imagine-image"), true);
   assert.equal(imagine.shouldUseImagineWsForImageModel("grok-imagine-image-pro"), true);
+  assert.equal(
+    imagine.buildExperimentalImageEditPayload({
+      prompt: "edit it",
+      imageReferences: ["https://assets.grok.com/users/u/asset/content"],
+      modelName: "imagine-image-edit",
+    }).toolOverrides,
+    undefined,
+  );
+  assert.equal(
+    imagine.replaceImageEditPlaceholders("blend @IMAGE1 with @image2; keep @IMAGE3 unchanged", [
+      { fileId: "asset_a" },
+      { fileId: "asset_b" },
+    ]),
+    "blend @asset_a with @asset_b; keep @IMAGE3 unchanged",
+  );
 
   const imagePayload = imagine.buildImagineWsPayload("draw a cat", "req_1", "2:3", true);
   assert.equal(imagePayload.item.content[0].type, "input_text");

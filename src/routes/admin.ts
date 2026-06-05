@@ -608,6 +608,7 @@ adminRoutes.get("/api/v1/admin/config", requireAdminAuth, async (c) => {
         dynamic_statsig: Boolean(settings.grok.dynamic_statsig),
         filter_tags: filterTags,
         video_poster_preview: Boolean(settings.grok.video_poster_preview),
+        imagine_public_image_proxy: Boolean(settings.grok.imagine_public_image_proxy),
         timeout: Number(settings.grok.stream_total_timeout ?? 600),
         base_proxy_url: String(settings.grok.proxy_url ?? ""),
         asset_proxy_url: String(settings.grok.cache_proxy_url ?? ""),
@@ -684,6 +685,9 @@ adminRoutes.post("/api/v1/admin/config", requireAdminAuth, async (c) => {
       if (typeof grokCfg.thinking === "boolean") grok_config.show_thinking = grokCfg.thinking;
       if (typeof grokCfg.temporary === "boolean") grok_config.temporary = grokCfg.temporary;
       if (typeof grokCfg.video_poster_preview === "boolean") grok_config.video_poster_preview = grokCfg.video_poster_preview;
+      if (typeof grokCfg.imagine_public_image_proxy === "boolean") {
+        grok_config.imagine_public_image_proxy = grokCfg.imagine_public_image_proxy;
+      }
       if (Array.isArray(grokCfg.retry_status_codes))
         grok_config.retry_status_codes = grokCfg.retry_status_codes.map((x: any) => Number(x)).filter((n: number) => Number.isFinite(n));
       if (Number.isFinite(Number(grokCfg.timeout))) grok_config.stream_total_timeout = Math.max(1, Math.floor(Number(grokCfg.timeout)));

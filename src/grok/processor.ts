@@ -3,6 +3,7 @@ import { extractResponseImageUrls } from "./imageCards";
 import { extractResponseVideoArtifact } from "./video";
 import type { ParsedToolCall } from "./tooling";
 import { ToolSieve, parseToolCalls } from "./tooling";
+import { toMediaOutputUrl } from "./mediaUrls";
 
 type GrokNdjson = Record<string, unknown>;
 type StreamFinishReason = "stop" | "error" | "tool_calls" | null;
@@ -98,11 +99,6 @@ function makeToolCallChunks(
   return chunks;
 }
 
-function toImgProxyUrl(globalCfg: GlobalSettings, origin: string, path: string): string {
-  const baseUrl = (globalCfg.base_url ?? "").trim() || origin;
-  return `${baseUrl}/images/${path}`;
-}
-
 function buildVideoTag(src: string): string {
   return `<video src="${src}" controls="controls" width="500" height="300"></video>\n`;
 }
@@ -127,22 +123,13 @@ function buildVideoHtml(args: { videoUrl: string; posterUrl?: string; posterPrev
   return buildVideoTag(args.videoUrl);
 }
 
-function base64UrlEncode(input: string): string {
-  const bytes = new TextEncoder().encode(input);
-  let binary = "";
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
-function encodeAssetPath(raw: string): string {
-  try {
-    const u = new URL(raw);
-    // Keep full URL (query etc.) to avoid lossy pathname-only encoding (some URLs may encode the real path in query).
-    return `u_${base64UrlEncode(u.toString())}`;
-  } catch {
-    const p = raw.startsWith("/") ? raw : `/${raw}`;
-    return `p_${base64UrlEncode(p)}`;
-  }
+function toMediaUrl(globalCfg: GlobalSettings, settings: GrokSettings, origin: string, rawUrl: string): string {
+  const baseUrl = (globalCfg.base_url ?? "").trim() || origin;
+  return toMediaOutputUrl({
+    rawUrl,
+    baseUrl,
+    proxyImaginePublic: settings.imagine_public_image_proxy === true,
+  });
 }
 
 export function createOpenAiStreamFromGrokNdjson(
@@ -310,13 +297,11 @@ export function createOpenAiStreamFromGrokNdjson(
               }
 
               if (videoArtifact.videoUrl) {
-                const videoPath = encodeAssetPath(videoArtifact.videoUrl);
-                const src = toImgProxyUrl(global, origin, videoPath);
+                const src = toMediaUrl(global, settings, origin, videoArtifact.videoUrl);
 
                 let poster: string | undefined;
                 if (videoArtifact.thumbnailUrl) {
-                  const thumbPath = encodeAssetPath(videoArtifact.thumbnailUrl);
-                  poster = toImgProxyUrl(global, origin, thumbPath);
+                  poster = toMediaUrl(global, settings, origin, videoArtifact.thumbnailUrl);
                 }
 
                 controller.enqueue(
@@ -347,8 +332,7 @@ export function createOpenAiStreamFromGrokNdjson(
                 if (urls.length) {
                   const linesOut: string[] = [];
                   for (const u of urls) {
-                    const imgPath = encodeAssetPath(u);
-                    const imgUrl = toImgProxyUrl(global, origin, imgPath);
+                    const imgUrl = toMediaUrl(global, settings, origin, u);
                     linesOut.push(`![Generated Image](${imgUrl})`);
                   }
                   controller.enqueue(
@@ -506,13 +490,11 @@ export async function parseOpenAiFromGrokNdjson(
     const videoResp = grok.streamingVideoGenerationResponse;
     const videoArtifact = extractResponseVideoArtifact(grok, opts.cookie);
     if ((videoResp || requestedModel.includes("video")) && videoArtifact.videoUrl) {
-      const videoPath = encodeAssetPath(videoArtifact.videoUrl);
-      const src = toImgProxyUrl(global, origin, videoPath);
+      const src = toMediaUrl(global, settings, origin, videoArtifact.videoUrl);
 
       let poster: string | undefined;
       if (videoArtifact.thumbnailUrl) {
-        const thumbPath = encodeAssetPath(videoArtifact.thumbnailUrl);
-        poster = toImgProxyUrl(global, origin, thumbPath);
+        poster = toMediaUrl(global, settings, origin, videoArtifact.thumbnailUrl);
       }
 
       content = buildVideoHtml({
@@ -535,8 +517,7 @@ export async function parseOpenAiFromGrokNdjson(
     const urls = extractResponseImageUrls(grok, opts.cookie);
     if (urls.length) {
       for (const u of urls) {
-        const imgPath = encodeAssetPath(u);
-        const imgUrl = toImgProxyUrl(global, origin, imgPath);
+        const imgUrl = toMediaUrl(global, settings, origin, u);
         content += `\n![Generated Image](${imgUrl})`;
       }
       break;
