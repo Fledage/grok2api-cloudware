@@ -351,14 +351,18 @@ try {
               { status: 200 },
             );
           }
-          if ([
-            "/admin/account.html",
-            "/admin/config.html",
-            "/admin/cache.html",
-            "/keys/keys.html",
-            "/chat/chat_admin.html",
-            "/datacenter/datacenter.html",
-          ].includes(pathname)) {
+          const htmlAssetMap = {
+            "/admin/account.html": "/admin/account",
+            "/admin/config.html": "/admin/config",
+            "/admin/cache.html": "/admin/cache",
+            "/keys/keys.html": "/keys/keys",
+            "/chat/chat_admin.html": "/chat/chat_admin",
+            "/datacenter/datacenter.html": "/datacenter/datacenter",
+          };
+          if (pathname in htmlAssetMap) {
+            return new Response(null, { status: 307, headers: { location: htmlAssetMap[pathname] } });
+          }
+          if (Object.values(htmlAssetMap).includes(pathname)) {
             return new Response(`${pathname}<div id="admin-header" data-active="/admin/account"></div>`, { status: 200 });
           }
           return knownAssets.has(pathname)
@@ -414,7 +418,7 @@ try {
     const adminAccountPage = await app.default.fetch(new Request("https://worker.example/admin/account?v=dev"), env, ctx);
     assert.equal(adminAccountPage.status, 200);
     const adminAccountHtml = await adminAccountPage.text();
-    assert.ok(adminAccountHtml.includes("/admin/account.html"));
+    assert.match(adminAccountHtml, /\/admin\/account(?:\.html)?/);
     assert.ok(adminAccountHtml.includes("原作者 @Chenyme"));
     assert.ok(adminAccountHtml.includes("改造 @Fledage"));
     assert.ok(adminAccountHtml.includes('href="/admin/keys"'));
@@ -456,19 +460,19 @@ try {
     assert.equal(legacyCacheRoot.headers.get("location"), "/admin/cache?v=dev");
     const adminConfigPage = await app.default.fetch(new Request("https://worker.example/admin/config?v=dev"), env, ctx);
     assert.equal(adminConfigPage.status, 200);
-    assert.ok((await adminConfigPage.text()).includes("/admin/config.html"));
+    assert.match(await adminConfigPage.text(), /\/admin\/config(?:\.html)?/);
     const adminCachePage = await app.default.fetch(new Request("https://worker.example/admin/cache?v=dev"), env, ctx);
     assert.equal(adminCachePage.status, 200);
-    assert.ok((await adminCachePage.text()).includes("/admin/cache.html"));
+    assert.match(await adminCachePage.text(), /\/admin\/cache(?:\.html)?/);
     const adminKeysPage = await app.default.fetch(new Request("https://worker.example/admin/keys?v=dev"), env, ctx);
     assert.equal(adminKeysPage.status, 200);
-    assert.ok((await adminKeysPage.text()).includes("/keys/keys.html"));
+    assert.match(await adminKeysPage.text(), /\/keys\/keys(?:\.html)?/);
     const adminChatPage = await app.default.fetch(new Request("https://worker.example/admin/chat?v=dev"), env, ctx);
     assert.equal(adminChatPage.status, 200);
-    assert.ok((await adminChatPage.text()).includes("/chat/chat_admin.html"));
+    assert.match(await adminChatPage.text(), /\/chat\/chat_admin(?:\.html)?/);
     const adminDatacenterPage = await app.default.fetch(new Request("https://worker.example/admin/datacenter?v=dev"), env, ctx);
     assert.equal(adminDatacenterPage.status, 200);
-    assert.ok((await adminDatacenterPage.text()).includes("/datacenter/datacenter.html"));
+    assert.match(await adminDatacenterPage.text(), /\/datacenter\/datacenter(?:\.html)?/);
 
     const verify = await app.default.fetch(new Request("https://worker.example/webui/api/verify"), env, ctx);
     assert.equal(verify.status, 200);

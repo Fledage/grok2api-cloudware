@@ -74,6 +74,24 @@ function redirectVersionedAdmin(c: any, pathname: string): Response {
   return c.redirect(`${pathname}?v=${encodeURIComponent(buildSha)}`, 302);
 }
 
+function isAssetRedirect(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
+async function fetchAssetResource(assets: Fetcher, url: URL, raw: Request): Promise<Response> {
+  let current = new URL(url.toString());
+  for (let redirects = 0; redirects < 3; redirects += 1) {
+    const res = await assets.fetch(new Request(current.toString(), raw));
+    if (!isAssetRedirect(res.status)) return res;
+    const location = res.headers.get("location");
+    if (!location) return res;
+    const next = new URL(location, current);
+    if (next.origin !== current.origin) return res;
+    current = next;
+  }
+  return assets.fetch(new Request(current.toString(), raw));
+}
+
 async function fetchAsset(c: any, pathname: string): Promise<Response> {
   const assets = getAssets(c.env as Env);
   const buildSha = getBuildSha(c.env as Env);
@@ -88,7 +106,7 @@ async function fetchAsset(c: any, pathname: string): Promise<Response> {
   const url = new URL(c.req.url);
   url.pathname = pathname;
   try {
-    const res = await assets.fetch(new Request(url.toString(), c.req.raw));
+    const res = await fetchAssetResource(assets, url, c.req.raw);
     const extra: Record<string, string> = { "x-grok2api-build": buildSha };
 
     // Avoid caching UI files aggressively, otherwise users may keep seeing old UI after redeploy.
